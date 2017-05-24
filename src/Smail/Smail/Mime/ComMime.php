@@ -374,16 +374,16 @@ class ComMime
                         // we want to break BEFORE the token
                         if (preg_match('/^(=\?([^?]*)\?(Q|B)\?([^?]*)\?=)/i', substr($header, $pos))) {
                             $pos --;
-                        }                         // check if we found this token in the *middle*
-                        // of an encoded word, in which case we have to
-                        // ignore it, pushing back to the token that
-                        // starts the encoded word instead
-                        // of course, this is only possible if there is
-                        // more content after the next hard wrap
-                        // then look for the end of an encoded word in
-                        // the next part (past the next hard wrap)
-                        // then see if it is in fact part of a legitimate
-                        // encoded word
+                        }  // check if we found this token in the *middle*
+                          // of an encoded word, in which case we have to
+                          // ignore it, pushing back to the token that
+                          // starts the encoded word instead
+                          // of course, this is only possible if there is
+                          // more content after the next hard wrap
+                          // then look for the end of an encoded word in
+                          // the next part (past the next hard wrap)
+                          // then see if it is in fact part of a legitimate
+                          // encoded word
                         else 
                             if (strlen($header) > $hard_wrap && ($end_pos = strpos(substr($header, $hard_wrap), '?=')) !== FALSE && preg_match('/(=\?([^?]*)\?(Q|B)\?([^?]*)\?=)$/i', substr($header, 0, $hard_wrap + $end_pos + 2), $matches)) {
                                 $pos = $hard_wrap + $end_pos + 2 - strlen($matches[1]) - 1;
@@ -819,7 +819,7 @@ class ComMime
      * This function decodes the body depending on the encoding type.
      * Currently quoted-printable and base64 encodings are supported.
      * decode_body hook was added to this function in 1.4.2/1.5.0
-     * 
+     *
      * @param string $body
      *            encoded message body
      * @param string $encoding
@@ -846,59 +846,6 @@ class ComMime
         return $body;
     }
 
-    /**
-     * This returns a parsed string called $body.
-     * That string can then
-     * be displayed as the actual message in the HTML. It contains
-     * everything needed, including HTML Tags, Attachments at the
-     * bottom, etc.
-     */
-    public static function formatBody($imap_stream, $message, $color, $wrap_at, $ent_num, $id)
-    {
-        $body = '';
-        $body_message = $message->getEntity($ent_num);
-        if (($body_message->header->type0 == 'text') || ($body_message->header->type0 == 'rfc822')) {
-            $body = self::mime_fetch_body($imap_stream, $id, $ent_num);
-            $body = self::decodeBody($body, $body_message->header->encoding);
-            /*
-             * If there are other types that shouldn't be formatted, add
-             * them here.
-             */
-            $show_html_default = 1;
-            if ($body_message->header->type1 == 'html') {
-                if ($show_html_default != 1) {
-                    $entity_conv = array(
-                        '&nbsp;' => ' ',
-                        '<p>' => "\n",
-                        '<P>' => "\n",
-                        '<br>' => "\n",
-                        '<BR>' => "\n",
-                        '<br />' => "\n",
-                        '<BR />' => "\n",
-                        '&gt;' => '>',
-                        '&lt;' => '<'
-                    );
-                    $body = strtr($body, $entity_conv);
-                    $body = strip_tags($body);
-                    $body = trim($body);
-                    self::translateText($body, $wrap_at, $body_message->header->getParameter('charset'));
-                } else {
-                    $charset = $body_message->header->getParameter('charset');
-                    if (! empty($charset)) {
-                        $charset = strtolower($charset);
-                        if ($charset == 'gbk' || $charset == 'gb2312' || $charset == 'gb18030') {
-                            $body = iconv($charset, 'utf-8//IGNORE', $body);
-                        }
-                        $body = self::magicHTML($body, $id, $message);
-                    }
-                }
-            } else {
-                $charset = $body_message->header->getParameter('charset');
-                self::translateText($body, $wrap_at, $charset);
-            }
-        }
-        return $body;
-    }
 
     /**
      * This function trys to locate the entity_id of a specific mime element
@@ -926,57 +873,6 @@ class ComMime
         return $ret;
     }
 
-    /*
-     * This starts the parsing of a particular structure. It is called recursively,
-     * so it can be passed different structures. It returns an object of type
-     * $message.
-     * First, it checks to see if it is a multipart message. If it is, then it
-     * handles that as it sees is necessary. If it is just a regular entity,
-     * then it parses it and adds the necessary header information (by calling out
-     * to mime_get_elements()
-     */
-    public static function mime_fetch_body($imap_stream, $id, $ent_id = 1, $fetch_size = 0)
-    {
-        $uid_support = true;
-        /*
-         * Do a bit of error correction. If we couldn't find the entity id, just guess
-         * that it is the first one. That is usually the case anyway.
-         */
-        if (! $ent_id) {
-            $cmd = "FETCH $id BODY[]";
-        } else {
-            $cmd = "FETCH $id BODY[$ent_id]";
-        }
-        
-        if ($fetch_size != 0)
-            $cmd .= "<0.$fetch_size>";
-        $smail = new smail();
-        $data = $smail->smimap_run_command($imap_stream, $cmd, true, $response, $message, $uid_support);
-        do {
-            $topline = trim(array_shift($data));
-        } while ($topline && $topline[0] == '*' && ! preg_match('/\* [0-9]+ FETCH.*/i', $topline));
-        
-        $wholemessage = implode('', $data);
-        if (preg_match('/\{([^\}]*)\}/', $topline, $regs)) {
-            $ret = substr($wholemessage, 0, $regs[1]);
-            /*
-             * There is some information in the content info header that could be important
-             * in order to parse html messages. Let's get them here.
-             */
-        } else 
-            if (preg_match('/"([^"]*)"/', $topline, $regs)) {
-                $ret = $regs[1];
-            } else 
-                if ((stristr($topline, 'nil') !== false) && (empty($wholemessage))) {
-                    $ret = $wholemessage;
-                } else {
-                    $data = $smail->smimap_run_command($imap_stream, "FETCH $passed_id BODY[]", true, $response, $message, $uid_support);
-                    array_shift($data);
-                    $wholemessage = implode('', $data);
-                    $ret = $wholemessage;
-                }
-        return $ret;
-    }
 
     /**
      * Encodes string according to rfc2047 B encoding header formating rules
@@ -2145,8 +2041,11 @@ class ComMime
     /**
      * fix <style>
      * Enter description here .
+     *
+     *
+     *
      * ..
-     * 
+     *
      * @param
      *            $body
      * @param
@@ -2227,6 +2126,9 @@ class ComMime
          * like so:
          * body {background: blah-blah}
          * and change it to .
+         *
+         *
+         *
          * bodyclass so we can just assign it to a <div>
          */
         $content = preg_replace("|body(\s*\{.*?\})|si", ".bodyclass\\1", $content);

@@ -2,7 +2,6 @@
 namespace Smail;
 
 use Smail\Util\ComAuth;
-use Smail\Util\MailConfig;
 use Smail\Util\ComDate;
 use Smail\Util\ComFunc;
 use Smail\Util\ComDection;
@@ -10,6 +9,10 @@ use Smail\Mime\ComMime;
 
 class MailBase
 {
+
+    var $username = '';
+
+    var $password = '';
 
     var $imap_server = '';
 
@@ -29,11 +32,9 @@ class MailBase
 
     var $imap_server_type = '';
 
-    var $username = '';
-
-    var $password = '';
-
     var $error = '';
+
+    var $imapStream;
 
     public function __construct()
     {}
@@ -41,26 +42,18 @@ class MailBase
     /**
      * 登录邮件服务器
      *
-     * @param string $username 用户名            
-     * @param string $password 密码            
-     * @return object $imap_stream;
+     * @param string $username
+     *            用户名
+     * @param string $password
+     *            密码
      */
-    public function login($username, $password)
+    public function login()
     {
-        $this->username = $username;
-        $this->password = $password;
-        $connection_pros = MailConfig::getConnectionPro($username);
-        $this->imap_server = $connection_pros[2];
-        $this->imap_port = $connection_pros[3];
-        $this->imap_auth_mech = $connection_pros[0];
-        $this->use_tls = $connection_pros[1];
-        $this->mail_domain = $connection_pros[6];
-        $this->imap_server_type = $connection_pros[8];
         if ($this->use_tls == true && extension_loaded('openssl')) {
             $this->imap_server = 'tls://' . $this->imap_server;
         }
-        $imap_stream = @fsockopen($this->imap_server, $this->imap_port, $error_number, $error_string, 15);
-        $server_info = fgets($imap_stream, 1024);
+        $this->imapStream = @fsockopen($this->imap_server, $this->imap_port, $error_number, $error_string, 15);
+        $server_info = fgets($this->imapStream, 1024);
         if (($this->imap_auth_mech == 'cram-md5') or ($this->imap_auth_mech == 'digest-md5')) {
             $tag = $this->smimap_session_id(false);
             if ($this->imap_auth_mech == 'digest-md5') {
@@ -68,24 +61,24 @@ class MailBase
             } elseif ($this->imap_auth_mech == 'cram-md5') {
                 $query = $tag . " AUTHENTICATE CRAM-MD5\r\n";
             }
-            fputs($imap_stream, $query);
-            $answer = $this->smimap_fgets($imap_stream);
+            fputs($this->imapStream, $query);
+            $answer = $this->smimap_fgets();
             // Trim the "+ " off the front
             $response = explode(" ", $answer, 3);
             if ($response[0] == '+') {
                 // Got a challenge back
                 $challenge = $response[1];
                 if ($this->imap_auth_mech == 'digest-md5') {
-                    $reply = ComAuth::digest_md5_response($username, $password, $challenge, 'imap', $imap_server);
+                    $reply = ComAuth::digest_md5_response($this->username, $this->password, $challenge, 'imap', $imap_server);
                 } elseif ($this->imap_auth_mech == 'cram-md5') {
-                    $reply = ComAuth::cram_md5_response($username, $password, $challenge);
+                    $reply = ComAuth::cram_md5_response($this->username, $this->password, $challenge);
                 }
-                fputs($imap_stream, $reply);
-                $read = $this->smimap_fgets($imap_stream);
+                fputs($this->imapStream, $reply);
+                $read = $this->smimap_fgets();
                 if ($this->imap_auth_mech == 'digest-md5') {
                     if (substr($read, 0, 1) == '+') {
-                        fputs($imap_stream, "\r\n");
-                        $read = $this->smimap_fgets($imap_stream);
+                        fputs($this->imapStream, "\r\n");
+                        $read = $this->smimap_fgets();
                     }
                 }
                 $results = explode(" ", $read, 3);
@@ -95,7 +88,6 @@ class MailBase
                 $response = "BAD";
                 $message = 'IMAP server does not appear to support the authentication method selected.';
                 $message .= '  Please contact your system administrator.';
-                // error_message($message);
             }
         } elseif ($this->imap_auth_mech == 'login') {
             if (stristr($server_info, 'LOGINDISABLED')) {
@@ -106,67 +98,57 @@ class MailBase
                 }
                 $message .= "Please contact your system administrator and report this error.";
             } else {
-                if (ComMime::is8bit($username) || ComMime::is8bit($password)) {
+                if (ComMime::is8bit($this->username) || ComMime::is8bit($this->password)) {
                     $query['command'] = 'LOGIN';
-                    $query['literal_args'][0] = $username;
-                    $query['literal_args'][1] = $password;
-                    $read = $this->smimap_run_literal_command($imap_stream, $query, false, $response, $message);
+                    $query['literal_args'][0] = $this->username;
+                    $query['literal_args'][1] = $this->password;
+                    $read = $this->smimap_run_literal_command($query, false, $response, $message);
                 } else {
-                    $query = 'LOGIN "' . ComFunc::quoteimap($username) . '"' . ' "' . ComFunc::quoteimap($password) . '"';
-                    $read = $this->smimap_run_command($imap_stream, $query, false, $response, $message);
+                    $query = 'LOGIN "' . ComFunc::quoteimap($this->username) . '"' . ' "' . ComFunc::quoteimap($this->password) . '"';
+                    $read = $this->smimap_run_command($query, false, $response, $message);
                 }
             }
         } elseif ($this->imap_auth_mech == 'plain') {
             $response = "BAD";
             $message = 'smail does not support SASL PLAIN yet. Rerun conf.pl and use login instead.';
-            // error_message($message);
         } else {
             $response = "BAD";
             $message = "Internal smail error - unknown IMAP authentication method chosen.  Please contact the developers.";
-            // error_message($message);
         }
         if ($response != 'OK') {
             if (! $hide) {
                 if ($response != 'NO') {
-                    /* "BAD" and anything else gets reported here. */
                     $message = htmlspecialchars($message);
                     if ($response == 'BAD') {
-                        $string = sprintf("Bad request: %s<br/>", $message);
+                        $string = sprintf("Bad request: %s", $message);
                     } else {
-                        $string = sprintf("Unknown error: %s<br/>", $message);
+                        $string = sprintf("Unknown error: %s", $message);
                     }
                     if (isset($read) && is_array($read)) {
-                        $string .= '<br />Read data:<br/>';
+                        $string .= 'Read data:';
                         foreach ($read as $line) {
-                            $string .= htmlspecialchars($line) . "<br/>";
+                            $string .= htmlspecialchars($line);
                         }
                     }
-                    // error_message($message);
                 } else {
-                    $this->smimap_logout($imap_stream);
-                    // error_message("Unknown user or password incorrect.");
+                    $this->logout();
                 }
             }
+            throw new \Exception($message);
         }
-        return $imap_stream;
     }
 
     /**
      * 注销登录
-     *
-     * @param mixed $imap_stream            
      */
-    public function smimap_logout($imap_stream)
+    public function logout()
     {
-        if (isset($imap_stream) && $imap_stream) {
-            $this->smimap_run_command($imap_stream, 'LOGOUT', false, $response, $message);
-        }
+        $this->smimap_run_command('LOGOUT', false, $response, $message);
     }
 
     /**
      * 运行命令行
      *
-     * @param mixed $imap_stream            
      * @param string $query            
      * @param string $handle_errors            
      * @param string $response            
@@ -174,12 +156,12 @@ class MailBase
      * @param string $unique_id            
      * @return mixed $read
      */
-    protected function smimap_run_command_list($imap_stream, $query, $handle_errors, &$response, &$message, $unique_id = false)
+    protected function smimap_run_command_list($query, $handle_errors, &$response, &$message, $unique_id = false)
     {
-        if ($imap_stream) {
+        if ($this->imapStream) {
             $sid = $this->smimap_session_id($unique_id);
-            fputs($imap_stream, $sid . ' ' . $query . "\r\n");
-            $read = $this->smimap_read_data_list($imap_stream, $sid, $handle_errors, $response, $message, $query);
+            fputs($this->imapStream, $sid . ' ' . $query . "\r\n");
+            $read = $this->smimap_read_data_list($sid, $handle_errors, $response, $message, $query);
             return $read;
         } else {
             return false;
@@ -219,16 +201,11 @@ class MailBase
     /**
      * 获取ID组 1:1000,并放入session
      *
-     * @param mixed $imap_stream            
      * @param array $mbxresponse            
      */
-    private function smimap_get_php_sort_order($imap_stream, $mbxresponse)
+    private function smimap_get_php_sort_order($mbxresponse)
     {
         $uid_support = true;
-        
-        if (isset($_SESSION['php_sort_array'])) {
-            unset($_SESSION['php_sort_array']);
-        }
         $php_sort_array = array();
         if ($uid_support) {
             if (isset($mbxresponse['UIDNEXT'])) {
@@ -237,7 +214,7 @@ class MailBase
                 $uidnext = '*';
             }
             $query = "SEARCH UID 1:$uidnext";
-            $uids = $this->smimap_run_command($imap_stream, $query, true, $response, $message, true);
+            $uids = $this->smimap_run_command($query, true, $response, $message, true);
             if (isset($uids[0])) {
                 $php_sort_array = array();
                 // EIMS workaround. EIMS returns the result as multiple untagged SEARCH responses
@@ -254,15 +231,13 @@ class MailBase
             $qty = $mbxresponse['EXISTS'];
             $php_sort_array = range(1, $qty);
         }
-        $_SESSION['php_sort_array'] = $php_sort_array;
         return $php_sort_array;
     }
 
     /**
      * 创建会话ID
      *
-     * @param
-     *            $unique_id
+     * @param string $unique_id            
      */
     public function smimap_session_id($unique_id = FALSE)
     {
@@ -276,21 +251,19 @@ class MailBase
 
     /**
      * 获取会话信息
-     *
-     * @param mixed $imap_stream            
      */
-    private function smimap_fgets($imap_stream)
+    private function smimap_fgets()
     {
         $read = '';
         $buffer = 4096;
         $results = '';
         $offset = 0;
         while (strpos($results, "\r\n", $offset) === false) {
-            if (! ($read = fgets($imap_stream, $buffer))) {
+            if (! ($read = fgets($this->imapStream, $buffer))) {
                 /* this happens in case of an error */
                 /* reset $results because it's useless */
                 $results = false;
-                break;
+                throw new \Exception($read);
             }
             if ($results != '') {
                 $offset = strlen($results) - 1;
@@ -304,8 +277,6 @@ class MailBase
      * 运行命令
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $query
      * @param
      *            $handle_errors
@@ -316,15 +287,15 @@ class MailBase
      * @param
      *            $unique_id
      */
-    private function smimap_run_literal_command($imap_stream, $query, $handle_errors, &$response, &$message, $unique_id = false)
+    private function smimap_run_literal_command($query, $handle_errors, &$response, &$message, $unique_id = false)
     {
-        if ($imap_stream) {
+        if ($this->imapStream) {
             $sid = $this->smimap_session_id($unique_id);
             $command = sprintf("%s {%d}\r\n", $query['command'], strlen($query['literal_args'][0]));
-            fputs($imap_stream, $sid . ' ' . $command);
+            fputs($this->imapStream, $sid . ' ' . $command);
             
             // TODO: Put in error handling here //
-            $read = $this->smimap_read_data($imap_stream, $sid, $handle_errors, $response, $message, $query['command']);
+            $read = $this->smimap_read_data($sid, $handle_errors, $response, $message, $query['command']);
             
             $i = 0;
             $cnt = count($query['literal_args']);
@@ -334,23 +305,19 @@ class MailBase
                 } else {
                     $command = sprintf("%s\r\n", $query['literal_args'][$i]);
                 }
-                fputs($imap_stream, $command);
-                $read = $this->smimap_read_data($imap_stream, $sid, $handle_errors, $response, $message, $query['command']);
+                fputs($this->imapStream, $command);
+                $read = $this->smimap_read_data($sid, $handle_errors, $response, $message, $query['command']);
                 $i ++;
             }
             return $read;
         } else {
-            $string = "会话流没有创建";
-            // error_message($string);
-            return false;
+            throw new \Exception('unknown imap stream');
         }
     }
 
     /**
      * 读取会话返回数据
      *
-     * @param
-     *            $imap_stream
      * @param
      *            $tag_uid
      * @param
@@ -368,17 +335,15 @@ class MailBase
      * @param
      *            $no_return
      */
-    protected function smimap_read_data($imap_stream, $tag_uid, $handle_errors, &$response, &$message, $query = '')
+    protected function smimap_read_data($tag_uid, $handle_errors, &$response, &$message, $query = '')
     {
-        $res = $this->smimap_read_data_list($imap_stream, $tag_uid, $handle_errors, $response, $message, $query);
+        $res = $this->smimap_read_data_list($tag_uid, $handle_errors, $response, $message, $query);
         return $res[0];
     }
 
     /**
      * 运行命令
      *
-     * @param
-     *            $imap_stream
      * @param
      *            $query
      * @param
@@ -396,24 +361,21 @@ class MailBase
      * @param
      *            $no_return
      */
-    public function smimap_run_command($imap_stream, $query, $handle_errors, &$response, &$message, $unique_id = false)
+    public function smimap_run_command($query, $handle_errors, &$response, &$message, $unique_id = false)
     {
-        if ($imap_stream) {
+        if ($this->imapStream) {
             $sid = $this->smimap_session_id($unique_id);
-            fputs($imap_stream, $sid . ' ' . $query . "\r\n");
-            $read = $this->smimap_read_data($imap_stream, $sid, $handle_errors, $response, $message, $query);
+            fputs($this->imapStream, $sid . ' ' . $query . "\r\n");
+            $read = $this->smimap_read_data($sid, $handle_errors, $response, $message, $query);
             return $read;
         } else {
-            $string = "会话数据流为空";
-            return false;
+            throw new \Exception('imap steam is null');
         }
     }
 
     /**
      * 读取数据列表
      *
-     * @param
-     *            $imap_stream
      * @param
      *            $tag_uid
      * @param
@@ -431,14 +393,14 @@ class MailBase
      * @param
      *            $no_return
      */
-    private function smimap_read_data_list($imap_stream, $tag_uid, $handle_errors, &$response, &$message, $query = '')
+    private function smimap_read_data_list($tag_uid, $handle_errors, &$response, &$message, $query = '')
     {
         $read = '';
         $tag_uid_a = explode(' ', trim($tag_uid));
         $tag = $tag_uid_a[0];
         $resultlist = array();
         $data = array();
-        $read = $this->smimap_fgets($imap_stream);
+        $read = $this->smimap_fgets();
         $i = 0;
         while ($read) {
             $char = $read{0};
@@ -449,7 +411,7 @@ class MailBase
                         break 2;
                     }
                 default:
-                    $read = $this->smimap_fgets($imap_stream);
+                    $read = $this->smimap_fgets();
                     break;
                 case $tag{0}:
                     {
@@ -479,7 +441,7 @@ class MailBase
                         } elseif ($found_tag !== $tag) {
                             /* reset data array because we do not need this reponse */
                             $data = array();
-                            $read = $this->smimap_fgets($imap_stream);
+                            $read = $this->smimap_fgets();
                             break;
                         }
                     } // end case $tag{0}
@@ -505,7 +467,7 @@ class MailBase
                                         $j = strrpos($read, '{');
                                         $iLit = substr($read, $j + 1, - 3);
                                         $fetch_data[] = $read;
-                                        $sLiteral = $this->smimap_fread($imap_stream, $iLit);
+                                        $sLiteral = $this->smimap_fread($iLit);
                                         if ($sLiteral === false) { /* error */
                                             break 4; /* while while switch while */
                                         }
@@ -523,7 +485,7 @@ class MailBase
                                          * we just got the exact literalsize and there
                                          * must follow data to complete the response
                                          */
-                                        $read = $this->smimap_fgets($imap_stream);
+                                        $read = $this->smimap_fgets();
                                         if ($read === false) { /* error */
                                             break 4; /* while while switch while */
                                         }
@@ -537,7 +499,7 @@ class MailBase
                                      * retrieve next line and check in the while
                                      * statements if it belongs to this fetch response
                                      */
-                                    $read = $this->smimap_fgets($imap_stream);
+                                    $read = $this->smimap_fgets();
                                     if ($read === false) { /* error */
                                         break 4; /* while while switch while */
                                     }
@@ -562,20 +524,20 @@ class MailBase
                                     // will trigger literal fetching ({SET:debug=51} !== int )
                                     if (is_numeric($iLit)) {
                                         $data[] = $read;
-                                        $sLiteral = fread($imap_stream, $iLit);
+                                        $sLiteral = fread($this->imapStream, $iLit);
                                         if ($sLiteral === false) { /* error */
                                             $read = false;
                                             break 3; /* while switch while */
                                         }
                                         $data[] = $sLiteral;
-                                        $data[] = $this->smimap_fgets($imap_stream);
+                                        $data[] = $this->smimap_fgets();
                                     } else {
                                         $data[] = $read;
                                     }
                                 } else {
                                     $data[] = $read;
                                 }
-                                $read = $this->smimap_fgets($imap_stream);
+                                $read = $this->smimap_fgets();
                                 if ($read === false) {
                                     break 3; /* while switch while */
                                 } else 
@@ -594,11 +556,11 @@ class MailBase
         /* error processing in case $read is false */
         if ($read === false) {
             unset($data);
-            $string = "<b>" . "ERROR: Connection dropped by IMAP server." . "</b><br />";
+            $error = "ERROR: Connection dropped by IMAP server.";
             $cmd = explode(' ', $query);
             $cmd = strtolower($cmd[0]);
             if ($query != '' && $cmd != 'login') {
-                $string .= "Query:" . ' ' . htmlspecialchars($query) . '<br />' . "<br />";
+                $error .= "Query:" . ' ' . $query;
             }
             echo $string;
         }
@@ -621,23 +583,20 @@ class MailBase
             case 'NO':
 				/* ignore this error from M$ exchange, it is not fatal (aka bug) */
 				if (strstr($message, 'command resulted in') === false) {
-                    echo '<span>command line:' . htmlspecialchars($query) . '</span></br>' . '<span>response:' . htmlspecialchars($message) . '</span>';
+                    $error = 'command line:' . $query . 'response:' . $message;
                     $close_connection = true;
                 }
                 break;
             case 'BAD':
-                $string = '<b>' . 'ERROR: Bad or malformed request' . "</b><br />" . "Query:" . ' ' . htmlspecialchars($query) . '<br />' . "Server responded:" . ' ' . htmlspecialchars($message) . "<br />";
-                echo $string;
+                $error = 'ERROR: Bad or malformed request' . "Query:" . $query . "Server responded:" . $message;
                 $close_connection = true;
                 break;
             case 'BYE':
-                $string = "<b>" . "ERROR: IMAP server closed the connection." . "</b><br />" . "Query:" . ' ' . htmlspecialchars($query) . '<br />' . "Server responded:" . ' ' . htmlspecialchars($message) . "<br />";
-                echo $string;
+                $error = "ERROR: IMAP server closed the connection." . "Query:" . $query . "Server responded:" . $message;
                 $close_connection = true;
                 break;
             default:
-                $string = '<b>' . 'ERROR: Unknown IMAP response' . '</b><br />' . 'Query:' . htmlspecialchars($query) . '<br />' . 'Server responded:' . ' ' . htmlspecialchars($message) . "<br />";
-                echo $string;
+                $error = 'ERROR: Unknown IMAP response' . 'Query:' . $query . 'Server responded:' . $message;
                 /*
                  * the error is displayed but because we don't know the reponse we
                  * return the result anyway
@@ -646,20 +605,22 @@ class MailBase
                 break;
         }
         if ($close_connection) {
-            $this->smimap_logout($imap_stream);
+            $this->logout();
+        }
+        if ($error) {
+            throw new \Exception($error);
         }
     }
 
     /**
      * 从会话流中读取信息
      *
-     * @param unknown_type $imap_stream            
      * @param unknown_type $iSize            
      * @param unknown_type $filter            
      * @param unknown_type $outputstream            
      * @param unknown_type $no_return            
      */
-    protected function smimap_fread($imap_stream, $iSize)
+    protected function smimap_fread($iSize)
     {
         $iBufferSize = $iSize;
         // see php bug 24033. They changed fread behaviour %$^&$%
@@ -673,7 +634,7 @@ class MailBase
         $sRead = $sReadRem = '';
         // NB: fread can also stop at end of a packet on sockets.
         while ($iRetrieved < $iSize) {
-            $sRead = fread($imap_stream, $iBufferSize);
+            $sRead = fread($this->imapStream, $iBufferSize);
             $iLength = strlen($sRead);
             $iRetrieved += $iLength;
             $iRemaining = $iSize - $iRetrieved;
@@ -702,16 +663,13 @@ class MailBase
      * If capability is set, returns only that specific capability,
      * else returns array of all capabilities.
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $capability
+     * @param string $capability            
      * @return array $smimap_capabilities
      *        
      */
-    public function smimap_capability($imap_stream, $capability = '')
+    public function capability($capability='')
     {
-        $read = $this->smimap_run_command($imap_stream, 'CAPABILITY', true, $a, $b);
+        $read = $this->smimap_run_command('CAPABILITY', true, $a, $b);
         $c = explode(' ', $read[0]);
         for ($i = 2; $i < count($c); $i ++) {
             $cap_list = explode('=', $c[$i]);

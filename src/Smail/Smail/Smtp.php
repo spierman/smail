@@ -5,11 +5,14 @@ use Smail\MailBase;
 use Smail\Mime\Rfc822Header;
 use Smail\Mime\MessageHeader;
 use Smail\Mime\Message;
-use Smail\Util\MailConfig;
 use Smail\Mime\ContentType;
 use Smail\Mime\ComMime;
+use Smail\Mime\AddressStructure;
+use Smail\Util\MailConfig;
 use Smail\Util\ComAuth;
 use Smail\Util\ComFunc;
+use Smail\Util\ComDection;
+use Smail\Imap;
 
 /**
  * smtp util class
@@ -33,6 +36,8 @@ class Smtp extends MailBase
      * @var boolean
      */
     var $move_to_sent = false;
+
+    private $smtpStream;
 
     /**
      * 构造函数
@@ -195,16 +200,15 @@ class Smtp extends MailBase
             $from->mailbox = '';
         }
         if ($this->use_tls == true && extension_loaded('openssl')) {
-            $stream = @fsockopen('tls://' . $this->smtp_server, $this->smtp_port, $errorNumber, $errorString);
+            $this->smtpStream = @fsockopen('tls://' . $this->smtp_server, $this->smtp_port, $errorNumber, $errorString);
         } else {
-            $stream = @fsockopen($this->smtp_server, $this->smtp_port, $errorNumber, $errorString);
+            $this->smtpStream = @fsockopen($this->smtp_server, $this->smtp_port, $errorNumber, $errorString);
         }
-        if (! $stream) {
-            $this->error = $errorString;
-            return false;
+        if (! $this->smtpStream) {
+            throw new \Exception($errorString);
         }
-        $tmp = fgets($stream, 1024);
-        if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+        $tmp = fgets($this->smtpStream, 1024);
+        if (! $this->smsmtp_errorcheck($tmp)) {
             return false;
         }
         if (isset($_SERVER['HTTP_HOST'])) {
@@ -219,21 +223,21 @@ class Smtp extends MailBase
         if (preg_match('/^\d+\.\d+\.\d+\.\d+$/', $helohost)) {
             $helohost = '[' . $helohost . ']';
         }
-        fputs($stream, "EHLO $helohost\r\n");
-        $tmp = fgets($stream, 1024);
-        if (! $this->smsmtp_errorcheck($tmp, $stream)) {
-            fputs($stream, "HELO $helohost\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+        fputs($this->smtpStream, "EHLO $helohost\r\n");
+        $tmp = fgets($this->smtpStream, 1024);
+        if (! $this->smsmtp_errorcheck($tmp)) {
+            fputs($this->smtpStream, "HELO $helohost\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
         }
-        $this->smsmtp_auth($stream);
-        $fromaddress = (strlen($from->mailbox) && $from->host) ? $from->mailbox . '@' . $from->host : '';
+        $this->smsmtp_auth();
+        $fromaddress = strlen($from->mailbox) && $from->host ? $from->mailbox . '@' . $from->host : '';
         if ($fromaddress) {
-            fputs($stream, 'MAIL FROM:<' . $fromaddress . ">\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+            fputs($this->smtpStream, 'MAIL FROM:<' . $fromaddress . ">\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
         }
@@ -242,9 +246,9 @@ class Smtp extends MailBase
                 $to[$i]->host = '';
             }
             if (strlen($to[$i]->mailbox)) {
-                fputs($stream, 'RCPT TO:<' . $to[$i]->mailbox . '@' . $to[$i]->host . ">\r\n");
-                $tmp = fgets($stream, 1024);
-                if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+                fputs($this->smtpStream, 'RCPT TO:<' . $to[$i]->mailbox . '@' . $to[$i]->host . ">\r\n");
+                $tmp = fgets($this->smtpStream, 1024);
+                if (! $this->smsmtp_errorcheck($tmp)) {
                     return false;
                 }
             }
@@ -254,9 +258,9 @@ class Smtp extends MailBase
                 $cc[$i]->host = '';
             }
             if (strlen($cc[$i]->mailbox)) {
-                fputs($stream, 'RCPT TO:<' . $cc[$i]->mailbox . '@' . $cc[$i]->host . ">\r\n");
-                $tmp = fgets($stream, 1024);
-                if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+                fputs($this->smtpStream, 'RCPT TO:<' . $cc[$i]->mailbox . '@' . $cc[$i]->host . ">\r\n");
+                $tmp = fgets($this->smtpStream, 1024);
+                if (! $this->smsmtp_errorcheck($tmp)) {
                     return false;
                 }
             }
@@ -266,22 +270,22 @@ class Smtp extends MailBase
                 $bcc[$i]->host = '';
             }
             if (strlen($bcc[$i]->mailbox)) {
-                fputs($stream, 'RCPT TO:<' . $bcc[$i]->mailbox . '@' . $bcc[$i]->host . ">\r\n");
-                $tmp = fgets($stream, 1024);
-                if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+                fputs($this->smtpStream, 'RCPT TO:<' . $bcc[$i]->mailbox . '@' . $bcc[$i]->host . ">\r\n");
+                $tmp = fgets($this->smtpStream, 1024);
+                if (! $this->smsmtp_errorcheck($tmp)) {
                     return false;
                 }
             }
         }
-        fputs($stream, "DATA\r\n");
-        $tmp = fgets($stream, 1024);
-        if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+        fputs($this->smtpStream, "DATA\r\n");
+        $tmp = fgets($this->smtpStream, 1024);
+        if (! $this->smsmtp_errorcheck($tmp)) {
             return false;
         }
-        $success = $this->mail($message, $stream);
-        $this->finalizeStream($stream);
+        $success = $this->mail($message);
+        $this->finalizeStream();
         if ($success && $this->move_to_sent) {
-            $imap_stream = $this->smimap_login($this->username, $this->password);
+            $imap_stream = $this->login($this->username, $this->password);
             $success = $this->mail($message, $imap_stream, $this->send_folder);
             $this->smimap_logout($imap_stream);
         }
@@ -292,16 +296,16 @@ class Smtp extends MailBase
      *
      * @param mixed $stream            
      */
-    private function smsmtp_auth(&$stream)
+    private function smsmtp_auth()
     {
         if ($this->smtp_auth_mech == 'cram-md5' || $this->smtp_auth_mech == 'digest-md5') {
             if ($this->smtp_auth_mech == 'cram-md5') {
-                fputs($stream, "AUTH CRAM-MD5\r\n");
+                fputs($this->smtpStream, "AUTH CRAM-MD5\r\n");
             } elseif ($this->smtp_auth_mech == 'digest-md5') {
-                fputs($stream, "AUTH DIGEST-MD5\r\n");
+                fputs($this->smtpStream, "AUTH DIGEST-MD5\r\n");
             }
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
             $chall = substr($tmp, 4);
@@ -310,58 +314,42 @@ class Smtp extends MailBase
             } elseif ($this->smtp_auth_mech == 'digest-md5') {
                 $response = ComAuth::digest_md5_response($this->username, $this->password, $chall, 'smtp', $host);
             }
-            fputs($stream, $response);
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+            fputs($this->smtpStream, $response);
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
             if ($this->smtp_auth_mech == 'digest-md5') {
-                fputs($stream, "\r\n");
-                $tmp = fgets($stream, 1024);
-                if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+                fputs($this->smtpStream, "\r\n");
+                $tmp = fgets($this->smtpStream, 1024);
+                if (! $this->smsmtp_errorcheck($tmp)) {
                     return false;
                 }
             }
-        } elseif ($this->smtp_auth_mech == 'none') {
-            fputs($stream, "AUTH LOGIN\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+        } elseif ($this->smtp_auth_mech == 'login' || $this->smtp_auth_mech == 'none') {
+            fputs($this->smtpStream, "AUTH LOGIN\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
-            fputs($stream, base64_encode($this->username) . "\r\n");
-            $tmp = fgets($stream, 1024);
-            if ($this->errorCheck($tmp, $stream)) {
+            fputs($this->smtpStream, base64_encode($this->username) . "\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
-            fputs($stream, base64_encode($this->password) . "\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
-                return false;
-            }
-        } elseif ($this->smtp_auth_mech == 'login') {
-            fputs($stream, "AUTH LOGIN\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
-                return false;
-            }
-            fputs($stream, base64_encode($this->username) . "\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
-                return false;
-            }
-            fputs($stream, base64_encode($this->password) . "\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+            fputs($this->smtpStream, base64_encode($this->password) . "\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
         } elseif ($this->smtp_auth_mech == "plain") {
             $auth = base64_encode("$this->username\0$this->username\0$this->password");
             $query = "AUTH PLAIN\r\n";
-            fputs($stream, $query);
-            $read = fgets($stream, 1024);
+            fputs($this->smtpStream, $query);
+            $read = fgets($this->smtpStream, 1024);
             if (substr($read, 0, 3) == '334') {
-                fputs($stream, "$auth\r\n");
-                $read = fgets($stream, 1024);
+                fputs($this->smtpStream, "$auth\r\n");
+                $read = fgets($this->smtpStream, 1024);
             }
             $results = explode(" ", $read, 3);
             $response = $results[1];
@@ -373,22 +361,21 @@ class Smtp extends MailBase
                 $saml_assertion = base64_encode(gzcompress(base64_decode($saml_assertion)));
             }
             $auth = base64_encode($this->username . "\0" . $saml_assertion);
-            fputs($stream, "AUTH SAML\r\n");
-            $tmp = fgets($stream, 1024);
-            if ($this->smsmtp_errorcheck($tmp, $stream)) {
+            fputs($this->smtpStream, "AUTH SAML\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if ($this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
-            fputs($stream, "$auth\r\n");
-            $tmp = fgets($stream, 1024);
-            if (! $this->smsmtp_errorcheck($tmp, $stream)) {
+            fputs($this->smtpStream, "$auth\r\n");
+            $tmp = fgets($this->smtpStream, 1024);
+            if (! $this->smsmtp_errorcheck($tmp)) {
                 return false;
             }
         } else {
-            if (! $this->smsmtp_errorcheck("535 Unable to use this auth type", $stream)) {
+            if (! $this->smsmtp_errorcheck("535 Unable to use this auth type")) {
                 return false;
             }
         }
-        return $stream;
     }
 
     /**
@@ -397,13 +384,13 @@ class Smtp extends MailBase
      * @param
      *            $stream
      */
-    private function finalizeStream(&$stream)
+    private function finalizeStream()
     {
-        fputs($stream, "\r\n.\r\n");
-        $tmp = fgets($stream, 1024);
-        $this->smsmtp_errorcheck($tmp, $stream);
-        fputs($stream, "QUIT\r\n");
-        fclose($stream);
+        fputs($this->smtpStream, "\r\n.\r\n");
+        $tmp = fgets($this->smtpStream, 1024);
+        $this->smsmtp_errorcheck($tmp);
+        fputs($this->smtpStream, "QUIT\r\n");
+        fclose($this->smtpStream);
         return true;
     }
 
@@ -439,19 +426,19 @@ class Smtp extends MailBase
      * @return void
      *
      */
-    private function imap_send_mail($message, $header, $boundary, $stream, &$raw_length, $folder)
+    private function imap_send_mail($message, $header, $boundary, &$raw_length, $folder)
     {
         $final_length = $raw_length;
-        $this->writeBody($message, 0, $final_length, $boundary);
-        if ($stream) {
-            if (Com_dection::is_cn_code($folder)) {
+        $this->writeBody($message, $final_length, $boundary);
+        if ($this->smtpStream) {
+            if (ComDection::is_cn_code($folder)) {
                 $folder = $mailbox = ComFunc::sm_mb_convert_encoding($folder, 'UTF7-IMAP', 'UTF-8');
             }
-            $imap = new smail_imap();
-            $imap->smimap_append($stream, $folder, $final_length);
-            fputs($stream, $header);
-            $this->writeBody($message, $stream, $raw_length, $boundary);
-            $imap->smimap_append_done($stream, $folder);
+            $imap = new Imap($this->username, $this->password);
+            $imap->appendEmail($folder, $final_length);
+            fputs($this->smtpStream, $header);
+            $this->writeBody($message, $raw_length, $boundary);
+            $imap->appendEmailDone($folder);
             unset($imap);
         }
     }
@@ -472,7 +459,7 @@ class Smtp extends MailBase
      * @param
      *            $extra
      */
-    private function mail(&$message, $stream, $extra = NULL)
+    private function mail(&$message, $extra = NULL)
     {
         $rfc822_header = $message->rfc822_header;
         if (count($message->entities)) {
@@ -485,9 +472,9 @@ class Smtp extends MailBase
         $reply_rfc822_header = isset($message->reply_rfc822_header) ? $message->reply_rfc822_header : '';
         $header = $this->prepareRFC822_Header($rfc822_header, $reply_rfc822_header, $raw_length);
         if (! empty($extra)) {
-            $this->imap_send_mail($message, $header, $boundary, $stream, $raw_length, $extra);
+            $this->imap_send_mail($message, $header, $boundary, $raw_length, $extra);
         } else {
-            $this->smtp_send_mail($message, $header, $boundary, $stream, $raw_length);
+            $this->smtp_send_mail($message, $header, $boundary, $raw_length);
         }
         return $raw_length;
     }
@@ -500,7 +487,7 @@ class Smtp extends MailBase
      */
     public function smsmtp_reply_message(&$message, $reply_ent_id, $mailbox)
     {
-        $imap_stream = $this->smimap_login($this->username, $this->password);
+        $imap_stream = $this->login($this->username, $this->password);
         $this->smimap_mailbox_select($imap_stream, $mailbox);
         $reply_message = $this->smimap_get_message($imap_stream, $reply_id, $mailbox);
         $this->smimap_logout($imap_stream);
@@ -689,7 +676,7 @@ class Smtp extends MailBase
             }
         }
         $user_agent = 'smail';
-        if (! empty($_SERVER['HTTP_USER_AGENT'])) {
+        if (isset($_SERVER['HTTP_USER_AGENT'])) {
             $user_agent = $_SERVER['HTTP_USER_AGENT'];
         }
         $header[] = 'User-Agent: ' . $user_agent . '0.1' . $rn;
@@ -805,12 +792,10 @@ class Smtp extends MailBase
      * @return void
      *
      */
-    private function smtp_send_mail($message, $header, $boundary, &$stream, &$raw_length)
+    private function smtp_send_mail($message, $header, $boundary, &$raw_length)
     {
-        if ($stream) {
-            fputs($stream, $header);
-        }
-        $this->writeBody($message, $stream, $raw_length, $boundary);
+        fputs($this->smtpStream, $header);
+        $this->writeBody($message, $raw_length, $boundary);
     }
 
     /**
@@ -836,7 +821,7 @@ class Smtp extends MailBase
      *            
      * @return void
      */
-    private function writeBody($message, &$stream, &$length_raw, $boundary = '')
+    private function writeBody($message, &$length_raw, $boundary = '')
     {
         if ($boundary && $message->entity_id && count($message->entities)) {
             if (strpos($boundary, '_part_')) {
@@ -852,15 +837,15 @@ class Smtp extends MailBase
             $s = '--' . $boundary . "\r\n";
             $s .= $this->prepareMIME_Header($message, $boundary_new, $length_raw);
             $length_raw += strlen($s);
-            if ($stream) {
-                fputs($stream, $s);
+            if ($this->smtpStream) {
+                fputs($this->smtpStream, $s);
             }
         }
-        $this->writeBodyPart($message, $stream, $length_raw);
+        $this->writeBodyPart($message, $length_raw);
         $last = false;
         $entCount = count($message->entities);
         for ($i = 0; $i < $entCount; $i ++) {
-            $msg = $this->writeBody($message->entities[$i], $stream, $length_raw, $boundary_new);
+            $msg = $this->writeBody($message->entities[$i], $length_raw, $boundary_new);
             if ($i == $entCount - 1)
                 $last = true;
         }
@@ -893,7 +878,7 @@ class Smtp extends MailBase
      *            
      * @return void
      */
-    private function writeBodyPart($message, &$stream, &$length)
+    private function writeBodyPart($message, &$length)
     {
         if ($message->mime_header) {
             $type0 = $message->mime_header->type0;
@@ -907,13 +892,12 @@ class Smtp extends MailBase
                     $body_part = $message->body_part;
                     $body_part = str_replace("\0", '', $body_part);
                     $length += ComFunc::clean_crlf($body_part);
-                    if ($stream) {
-                        fputs($stream, $body_part);
+                    if ($this->smtpStream) {
+                        fputs($this->smtpStream, $body_part);
                     }
                     $last = $body_part;
                 } elseif ($message->att_local_name) {
-                    $filename = $message->att_local_name;
-                    $file = fopen($filename, 'rb');
+                    $file = fopen($message->att_local_name, 'rb');
                     $file_has_long_lines = true;
                     if ($file_has_long_lines) { // base64 encode
                         while ($tmp = fread($file, 570)) {
@@ -921,15 +905,15 @@ class Smtp extends MailBase
                             if (substr($body_part, - 1, 1) != "\n")
                                 $body_part .= "\n";
                             $length += ComFunc::clean_crlf($body_part);
-                            if ($stream) {
-                                fputs($stream, $body_part);
+                            if ($this->smtpStream) {
+                                fputs($this->smtpStream, $body_part);
                             }
                         }
                     } else { // 8bit encode
                         while ($body_part = fgets($file, 4096)) {
                             $length += ComFunc::clean_crlf($body_part);
-                            if ($stream) {
-                                fputs($stream, $body_part);
+                            if ($this->smtpStream) {
+                                fputs($this->smtpStream, $body_part);
                             }
                             $last = $body_part;
                         }
@@ -941,19 +925,18 @@ class Smtp extends MailBase
                 if ($message->body_part) {
                     $body_part = $message->body_part;
                     $length += ComFunc::clean_crlf($body_part);
-                    if ($stream) {
-                        fputs($stream, $body_part);
+                    if ($this->smtpStream) {
+                        fputs($this->smtpStream, $body_part);
                     }
                 } elseif ($message->att_local_name) {
-                    $filename = $message->att_local_name;
-                    $file = fopen($this->attach_dir . '/' . $filename, 'rb');
+                    $file = fopen($message->att_local_name, 'rb');
                     while ($tmp = fread($file, 570)) {
                         $body_part = chunk_split(base64_encode($tmp));
                         if (substr($body_part, - 1, 1) != "\n")
                             $body_part .= "\n";
                         $length += ComFunc::clean_crlf($body_part);
-                        if ($stream) {
-                            fputs($stream, $body_part);
+                        if ($this->smtpStream) {
+                            fputs($this->smtpStream, $body_part);
                         }
                     }
                     fclose($file);
@@ -966,8 +949,8 @@ class Smtp extends MailBase
         }
         if ($body_part_trailing) {
             $length += strlen($body_part_trailing);
-            if ($stream) {
-                fputs($stream, $body_part_trailing);
+            if ($this->smtpStream) {
+                fputs($this->smtpStream, $body_part_trailing);
             }
         }
     }
@@ -1007,7 +990,7 @@ class Smtp extends MailBase
     {
         static $mimeBoundaryString;
         if (! isset($mimeBoundaryString) || $mimeBoundaryString == '') {
-            $mimeBoundaryString = '----=_Part_' . date('YmdHis') . '_' . mt_rand(10000, 99999) . '.1989';
+            $mimeBoundaryString = '----=_Part_' . date('YmdHis') . '_' . mt_rand(10000, 99999) . '.19910813';
         }
         return $mimeBoundaryString;
     }
@@ -1016,17 +999,15 @@ class Smtp extends MailBase
      * check if an SMTP reply is an error
      * and set an error message
      *
-     * @param
-     *            $line
-     * @param
-     *            $smtpConnection
+     * @param string $line            
+     * @param object $stream            
      */
-    private function smsmtp_errorcheck($line, $stream)
+    private function smsmtp_errorcheck($line)
     {
         $err_num = substr($line, 0, 3);
         $server_msg = substr($line, 4);
         while (substr($line, 0, 4) == ($err_num . '-')) {
-            $line = fgets($stream, 1024);
+            $line = fgets($this->smtpStream, 1024);
             $server_msg .= substr($line, 4);
         }
         if (((int) $err_num{0}) < 4) {
@@ -1097,9 +1078,7 @@ class Smtp extends MailBase
                 $message = "Unknown response";
                 break;
         }
-        throw new Exception($message);
-        // $this->error = $message . '=>' . nl2br(htmlspecialchars($server_msg));
-        return false;
+        throw new \Exception($message);
     }
 
     /**
@@ -1114,31 +1093,25 @@ class Smtp extends MailBase
      * @param
      *            $pass
      */
-    private function smsmtp_auth_pop($pop_server, $pop_por, $user, $pass)
+    private function smsmtp_auth_pop($pop_server = 'localhost', $pop_port = 110, $user, $pass)
     {
-        if (! $pop_port) {
-            $pop_port = 110;
-        }
-        if (! $pop_server) {
-            $pop_server = 'localhost';
-        }
         $popConnection = @fsockopen($pop_server, $pop_port, $err_no, $err_str);
         if (! $popConnection) {
-            $this->error = "Error connecting to POP Server($pop_server:$pop_port)" . "$err_no:$err_str";
+            throw new \Exception("Error connecting to POP Server($pop_server:$pop_port)" . "$err_no:$err_str");
         } else {
             $tmp = fgets($popConnection, 1024); /* banner */
             if (substr($tmp, 0, 3) != '+OK') {
-                return false;
+                throw new \Exception($tmp);
             }
             fputs($popConnection, "USER $user\r\n");
             $tmp = fgets($popConnection, 1024);
             if (substr($tmp, 0, 3) != '+OK') {
-                return false;
+                throw new \Exception($tmp);
             }
             fputs($popConnection, 'PASS ' . $pass . "\r\n");
             $tmp = fgets($popConnection, 1024);
             if (substr($tmp, 0, 3) != '+OK') {
-                return false;
+                throw new \Exception($tmp);
             }
             fputs($popConnection, "QUIT\r\n");
             fclose($popConnection);

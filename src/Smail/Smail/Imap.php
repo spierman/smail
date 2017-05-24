@@ -4,43 +4,53 @@ namespace Smail;
 use Smail\MailBase;
 use Smail\Mime\Rfc822Header;
 use Smail\Mime\ComMime;
+use Smail\Util\ComDate;
+use Smail\Util\ComFunc;
+use Smail\Util\ComDection;
+use Smail\Util\MailConfig;
 
 class Imap extends MailBase
 {
 
-    public function __construct()
+    public function __construct($username, $password)
     {
         parent::__construct();
+        $this->username = $username;
+        $this->password = $password;
+        $connection_pros = MailConfig::getConnectionPro($username);
+        $this->imap_server = $connection_pros[2];
+        $this->imap_port = $connection_pros[3];
+        $this->imap_auth_mech = $connection_pros[0];
+        $this->use_tls = $connection_pros[1];
+        $this->mail_domain = $connection_pros[6];
+        $this->imap_server_type = $connection_pros[8];
+        $this->login();
     }
 
     /**
      * user filter the special email
      *
-     * @param source $imap_stream            
      * @deprecated
      *
      */
-    public function smimap_user_filters($imap_stream)
+    public function smimap_user_filters()
     {
-        if (! is_resource($imap_stream)) {
-            return;
-        }
-        $aStatus = $this->smimap_status_messages($stream, 'INBOX', array(
+        $aStatus = $this->smimap_status_messages('INBOX', array( // TODO
             'MESSAGES'
         ));
         if ($aStatus['MESSAGES']) {
-            $this->smimap_mailbox_select($imap_stream, 'INBOX');
+            $this->mailboxSelect('INBOX');
             $id = array();
             $filters = array();
             for ($i = 0, $num = count($filters); $i < $num; $i ++) {
-                if (! $this->smimap_mailbox_exists($imap_stream, $filters[$i]['folder'])) {
+                if (! $this->isMailboxExists($this->imapStream, $filters[$i]['folder'])) {
                     continue;
                 }
                 if ($filters[$i]['where'] == 'To or Cc') {
-                    $id = $this->filter_search_and_delete($imap_stream, 'TO', $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
-                    $id = $this->filter_search_and_delete($imap_stream, 'CC', $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
+                    $id = $this->filter_search_and_delete($this->imapStream, 'TO', $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
+                    $id = $this->filter_search_and_delete($this->imapStream, 'CC', $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
                 } else {
-                    $id = $this->filter_search_and_delete($imap_stream, $filters[$i]['where'], $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
+                    $id = $this->filter_search_and_delete($this->imapStream, $filters[$i]['where'], $filters[$i]['what'], $filters[$i]['folder'], $filters_user_scan, $id);
                 }
             }
         }
@@ -104,7 +114,7 @@ class Imap extends MailBase
         for ($r = 0, $num = count($read); $r < $num && substr($read[$r], 0, 8) != '* SEARCH'; $r ++) {}
         if ($response == 'OK') {
             $ids = explode(' ', $read[$r]);
-            if ($this->smimap_mailbox_exists($imap, $where_to)) {
+            if ($this->isMailboxExists($imap, $where_to)) {
                 /*
                  * why we do n calls instead of just one. It is safer to copy
                  * messages one by one, but code does not call expunge after
@@ -125,39 +135,34 @@ class Imap extends MailBase
      * Checks whether or not the specified mailbox exists
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $mailbox
      * @return boolean
      */
-    function smimap_mailbox_exists($imap_stream, $mailbox)
+    public function isMailboxExists($mailbox)
     {
-        if (! isset($mailbox) || empty($mailbox)) {
-            return false;
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        $mbx = $this->smimap_run_command("LIST \"\" \"$mailbox\"", true, $response, $message);
+        if (isset($mbx[0])) {
+            return isset($mbx[0]);
+        } else {
+            throw new \Exception('mailbox not exists');
         }
-        $mbx = $this->smimap_run_command($imap_stream, "LIST \"\" \"$mailbox\"", true, $response, $message);
-        return isset($mbx[0]);
     }
 
     /**
      * select a mailbox
      *
-     * @param rsource $imap_stream            
      * @param string $mailbox            
      * @return ArrayObject $result PERMANENTFLAGS FLAGS RIGHTS
      */
-    public function smimap_mailbox_select(&$imap_stream, $mailbox)
+    public function mailboxSelect($mailbox)
     {
         $auto_expunge = true;
-        if (empty($mailbox)) {
-            return;
-        }
         if (strstr($mailbox, '../') || substr($mailbox, 0, 1) == '/') {
-            sprintf("Invalid mailbox name: %s", htmlspecialchars($mailbox));
-            $this->smimap_logout($imap_stream);
+            $this->logout();
+            throw new \Exception(sprintf("Invalid mailbox name: %s", $mailbox));
         }
         // cleanup $mailbox in order to prevent IMAP injection attacks
         $mailbox = str_replace(array(
@@ -167,7 +172,7 @@ class Imap extends MailBase
             "",
             ""
         ), $mailbox);
-        $read = $this->smimap_run_command($imap_stream, "SELECT \"$mailbox\"", true, $response, $message);
+        $read = $this->smimap_run_command("SELECT \"$mailbox\"", true, $response, $message);
         $result = array();
         for ($i = 0, $cnt = count($read); $i < $cnt; $i ++) {
             if (preg_match('/^\*\s+OK\s\[(\w+)\s(\w+)\]/', $read[$i], $regs)) {
@@ -197,7 +202,7 @@ class Imap extends MailBase
             $result['RIGHTS'] = $regs[1];
         }
         if ($auto_expunge) {
-            $tmp = $this->smimap_run_command($imap_stream, 'EXPUNGE', false, $a, $b);
+            $tmp = $this->smimap_run_command('EXPUNGE', false, $a, $b);
         }
         return $result;
     }
@@ -205,29 +210,23 @@ class Imap extends MailBase
     /**
      * create a mailbox if use zh_cn please turn your charset to utf-8
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $mailbox
-     * @param
-     *            $type
+     * @param string $mailbox            
+     * @param string $type            
      * @return string $response.':'.$message
      */
-    public function smimap_mailbox_create(&$imap_stream, $mailbox, $type = '')
+    public function mailboxCreate($mailbox, $type = '')
     {
+        $delimiter = $this->getMailboxDelimiter();
         if (strtolower($type) == 'noselect') {
-            if (empty($delimiter)) {
-                $delimiter = $this->smimap_get_delimiter($imap_stream);
-            }
             $create_mailbox = $mailbox . $delimiter;
         } else {
             $create_mailbox = $mailbox;
         }
-        $read_ary = $this->smimap_run_command($imap_stream, "CREATE \"$create_mailbox\"", true, $response, $message);
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        $read_ary = $this->smimap_run_command("CREATE \"$create_mailbox\"", true, $response, $message);
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        $this->smimap_subscribe($imap_stream, $create_mailbox);
+        $this->mailboxSubscribe($create_mailbox);
         return array(
             'data' => $response . ':' . $message
         );
@@ -236,18 +235,15 @@ class Imap extends MailBase
     /**
      * show the mailbox that created
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $mailbox
+     * @param string $mailbox            
      * @return $response
      */
-    public function smimap_subscribe($imap_stream, $mailbox)
+    public function mailboxSubscribe($mailbox)
     {
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        $read_ary = $this->smimap_run_command($imap_stream, "SUBSCRIBE \"$mailbox\"", true, $response, $message);
+        $read_ary = $this->smimap_run_command("SUBSCRIBE \"$mailbox\"", true, $response, $message);
         return array(
             'data' => $response . ':' . $message
         );
@@ -257,17 +253,15 @@ class Imap extends MailBase
      * Unsubscribes from an existing folder
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $mailbox
      * @return $response
      */
-    public function smimap_unsubscribe($imap_stream, $mailbox)
+    public function mailboxUnsubscribe($mailbox)
     {
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        $read_ary = $this->smimap_run_command($imap_stream, "UNSUBSCRIBE \"$mailbox\"", false, $response, $message);
+        $read_ary = $this->smimap_run_command("UNSUBSCRIBE \"$mailbox\"", false, $response, $message);
         return array(
             'data' => $response . ':' . $message
         );
@@ -276,48 +270,38 @@ class Imap extends MailBase
     /**
      * delete the mailbox
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $mailbox
+     * @param string $mailbox            
      * @return boolean
      */
-    public function smimap_mailbox_delete(&$imap_stream, $mailbox)
+    public function mailboxDelete($mailbox)
     {
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        $this->smimap_unsubscribe($imap_stream, $mailbox);
-        if ($this->smimap_mailbox_exists($imap_stream, $mailbox)) {
-            $cmd = "DELETE \"$mailbox\"";
-            $read_ary = $this->smimap_run_command($imap_stream, $cmd, true, $response, $message);
+        $this->mailboxUnsubscribe($mailbox);
+        if ($this->isMailboxExists($mailbox)) {
+            $read_ary = $this->smimap_run_command("DELETE \"$mailbox\"", true, $response, $message);
             if ($response !== 'OK') {
-                $this->smimap_subscribe($imap_stream, $mailbox);
-                return array(
-                    'data' => $response . ':' . $message
-                );
-            } else {
-                return array(
-                    'data' => $response . ':' . $message
-                );
+                $this->mailboxSubscribe($mailbox);
+                throw new Exception($response);
             }
+            return array(
+                'data' => $response . ':' . $message
+            );
         }
     }
 
     /**
      * Determines if the user is subscribed to the folder or not
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $folder
+     * @param string $mailbox            
      * @return boolean
      */
-    function smimap_mailbox_is_subscribed($imap_stream, $folder)
+    public function mailboxIsSubscribed($mailbox)
     {
-        $boxesall = $this->smimap_mailbox_list($imap_stream, true);
+        $boxesall = $this->smimap_mailbox_list(true);
         foreach ($boxesall as $ref) {
-            if ($ref['unformatted'] == $folder) {
+            if ($ref['unformatted'] == $mailbox) {
                 return true;
             }
         }
@@ -329,8 +313,6 @@ class Imap extends MailBase
      * delete all contents.
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $mailbox
      * @param
      *            $handle_errors
@@ -338,7 +320,7 @@ class Imap extends MailBase
      *            string or array $id
      * @return int $cnt
      */
-    function smimap_mailbox_expunge(&$imap_stream, $mailbox, $id = '')
+    public function mailboxExpunge($mailbox, $id = '')
     {
         if ($id) {
             if (is_array($id)) {
@@ -349,7 +331,7 @@ class Imap extends MailBase
         } else {
             $uid = false;
         }
-        $read = $this->smimap_run_command($imap_stream, 'EXPUNGE' . $id, true, $response, $message, $uid);
+        $read = $this->smimap_run_command('EXPUNGE' . $id, true, $response, $message, $uid);
         $cnt = 0;
         if (is_array($read)) {
             foreach ($read as $r) {
@@ -368,19 +350,17 @@ class Imap extends MailBase
      * rename the mailbox
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $old_name
      * @param
      *            $new_name
      * @param
      *            $delimiter
      */
-    function smimap_mailbox_rename(&$imap_stream, $old_name, $new_name, $delimiter = '')
+    function mailboxRename($old_name, $new_name, $delimiter = '')
     {
         if ($old_name != $new_name) {
             if (empty($delimiter)) {
-                $delimiter = $this->smimap_get_delimiter($imap_stream);
+                $delimiter = $this->getMailboxDelimiter();
             }
             if (substr($old_name, - 1) == $delimiter) {
                 $old_name = substr($old_name, 0, strlen($old_name) - 1);
@@ -389,35 +369,15 @@ class Imap extends MailBase
             } else {
                 $postfix = '';
             }
-            if (Com_dection::is_cn_code($old_name)) {
-                $old_name = Com_f::sm_mb_convert_encoding($old_name, 'UTF7-IMAP', 'UTF-8');
+            if (ComDection::is_cn_code($old_name)) {
+                $old_name = ComFunc::sm_mb_convert_encoding($old_name, 'UTF7-IMAP', 'UTF-8');
             }
-            $cmd = 'RENAME "' . $old_name . '" "' . $new_name . '"';
-            $this->smimap_unsubscribe($imap_stream, $old_name . $postfix);
-            $data = $this->smimap_run_command($imap_stream, $cmd, true, $response, $message);
-            $this->smimap_subscribe($imap_stream, $new_name . $postfix);
+            $this->mailboxUnsubscribe($old_name . $postfix);
+            $data = $this->smimap_run_command('RENAME "' . $old_name . '" "' . $new_name . '"', true, $response, $message);
+            $this->mailboxSubscribe($new_name . $postfix);
             return array(
                 'msg' => response . ':' . $message
             );
-            // $l = strlen( $old_name ) + 1;
-            // $p = 'unformatted';
-            // foreach($boxesall as $box){
-            // if (substr($box[$p], 0, $l) == $old_name . $delimiter) {
-            // $new_sub = $new_name . $delimiter . substr($box[$p], $l);
-            // /* With Cyrus IMAPd >= 2.0 rename is recursive, so don't check for errors here */
-            // if ($this->imap_server_type == 'cyrus') {
-            // $cmd = 'RENAME "' . $box[$p] . '" "' . $new_sub . '"';
-            // $data = $this->smimap_run_command($imap_stream, $cmd, false,$response, $message);
-            // }
-            // $was_subscribed = $this->smimap_mailbox_is_subscribed($imap_stream, $box[$p]);
-            // if ($was_subscribed) {
-            // $this->smimap_unsubscribe($imap_stream, $box[$p]);
-            // }
-            // if ($was_subscribed){
-            // $this->smimap_subscribe($imap_stream, $new_sub);
-            // }
-            // }
-            // }
         }
     }
 
@@ -425,20 +385,17 @@ class Imap extends MailBase
      * Returns a list of all folders, subscribed or not
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $delimiter
      * @deprecated
      *
      */
-    public function smimap_mailbox_list_all($imap_stream, $delimiter)
+    public function smimap_mailbox_list_all($delimiter)
     {
         $folder_prefix = '';
         $ssid = $this->smimap_session_id();
         $lsid = strlen($ssid);
-        fputs($imap_stream, $ssid . 'LIST' . '"' . $delimiter . '" ' . '"%"');
-        $read_ary = $this->smimap_read_data($imap_stream, $ssid, true, $response, $message);
-        die(json_encode($read_ary));
+        fputs($this->imapStream, $ssid . 'LIST' . '"' . $delimiter . '" ' . '"%"');
+        $read_ary = $this->smimap_read_data($ssid, true, $response, $message);
         $g = 0;
         $phase = 'inbox';
         $fld_pre_length = strlen($folder_prefix);
@@ -553,20 +510,16 @@ class Imap extends MailBase
      * show all mailbox
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $delimiter
      * @param
      *            $force
      */
-    function mailbox_list(&$imap_stream, $force = false)
+    public function mailboxList($force = false)
     {
         $default_sub_of_inbox = true;
         $list_special_folders_first = false;
         $inbox_subscribed = true;
-        if (empty($delimiter)) {
-            $delimiter = $this->smimap_get_delimiter($imap_stream);
-        }
+        $delimiter = $this->getMailboxDelimiter();
         if (! $force) {
             // $lsub_args = "LSUB \"$folder_prefix\" \"*%\"";
             $lsub_args = 'LIST ' . '"" ' . '"%"';
@@ -574,7 +527,7 @@ class Imap extends MailBase
             $lsub_args = "LSUB \"$folder_prefix\" \"*\"";
         }
         /* LSUB array */
-        $lsub_ary = $this->smimap_run_command($imap_stream, $lsub_args, true, $response, $message);
+        $lsub_ary = $this->smimap_run_command($lsub_args, true, $response, $message);
         $sorted_lsub_ary = array();
         for ($i = 0, $cnt = count($lsub_ary); $i < $cnt; $i ++) {
             /*
@@ -615,7 +568,7 @@ class Imap extends MailBase
                 $mbx = $sorted_lsub_ary[$i];
             }
             $command = 'LIST ' . '"" ' . '"' . $mbx . $delimiter . '%"';
-            $read = $this->smimap_run_command($imap_stream, $command, true, $response, $message);
+            $read = $this->smimap_run_command($command, true, $response, $message);
             /* Another workaround for literals */
             if (isset($read[1]) && substr($read[1], - 3) == "}\r\n") {
                 if (preg_match('/^(\* [A-Z]+.*)\{[0-9]+\}([ \n\r\t]*)$/', $read[0], $regs)) {
@@ -633,7 +586,7 @@ class Imap extends MailBase
          * we'll get it for them anyway
          */
         if (! $inbox_subscribed) {
-            $inbox_ary = $this->smimap_run_command($imap_stream, "LIST \"\" \"INBOX\"", true, $response, $message);
+            $inbox_ary = $this->smimap_run_command("LIST \"\" \"INBOX\"", true, $response, $message);
             /* Another workaround for literals */
             if (isset($inbox_ary[1]) && substr($inbox_ary[0], - 3) == "}\r\n") {
                 if (preg_match('/^(\* [A-Z]+.*)\{[0-9]+\}([ \n\r\t]*)$/', $inbox_ary[0], $regs)) {
@@ -643,7 +596,7 @@ class Imap extends MailBase
             $sorted_list_ary[] = $inbox_ary[0];
             $sorted_lsub_ary[] = $this->find_mailbox_name($inbox_ary[0]);
         }
-        $boxesall = $this->smimap_mailbox_parse($sorted_list_ary, $sorted_lsub_ary, $delimiter);
+        $boxesall = $this->mailboxParse($sorted_list_ary, $sorted_lsub_ary, $delimiter);
         /* Now, lets sort for special folders */
         $boxesnew = $used = array();
         /* Find INBOX */
@@ -663,7 +616,7 @@ class Imap extends MailBase
          */
         if (! $default_sub_of_inbox) {
             for ($k = 0; $k < $cnt; ++ $k) {
-                if (! $used[$k] && $this->isBoxBelow(strtolower($boxesall[$k]['unformatted']), 'inbox', $imap_stream) && strtolower($boxesall[$k]['unformatted']) != 'inbox') {
+                if (! $used[$k] && $this->isBoxBelow(strtolower($boxesall[$k]['unformatted']), 'inbox') && strtolower($boxesall[$k]['unformatted']) != 'inbox') {
                     $boxesnew[] = $boxesall[$k];
                     $used[$k] = true;
                 }
@@ -681,7 +634,7 @@ class Imap extends MailBase
         /* Find INBOX's children for systems where folders are ONLY under INBOX */
         if ($default_sub_of_inbox) {
             for ($k = 0; $k < $cnt; ++ $k) {
-                if (! $used[$k] && $this->isBoxBelow(strtolower($boxesall[$k]['unformatted']), 'inbox', $imap_stream) && strtolower($boxesall[$k]['unformatted']) != 'inbox') {
+                if (! $used[$k] && $this->isBoxBelow(strtolower($boxesall[$k]['unformatted']), 'inbox') && strtolower($boxesall[$k]['unformatted']) != 'inbox') {
                     $boxesnew[] = $boxesall[$k];
                     $used[$k] = true;
                 }
@@ -802,9 +755,9 @@ class Imap extends MailBase
      * @param unknown_type $subbox            
      * @param unknown_type $parentbox            
      */
-    private function isBoxBelow($subbox, $parentbox, &$imap_stream)
+    private function isBoxBelow($subbox, $parentbox)
     {
-        $delimiter = $this->smimap_get_delimiter($imap_stream);
+        $delimiter = $this->getMailboxDelimiter();
         /*
          * Eliminate the obvious mismatch, where the
          * subfolder path is shorter than that of the potential parent
@@ -854,7 +807,7 @@ class Imap extends MailBase
      * unformatted-dm - folder name as it appears in raw response
      * unformatted-disp - unformatted without $folder_prefix
      */
-    private function smimap_mailbox_parse(&$line, &$line_lsub, &$delimiter)
+    private function mailboxParse(&$line, &$line_lsub, &$delimiter)
     {
         $folder_prefix = '[Gmail]';
         /* Process each folder line */
@@ -928,15 +881,13 @@ class Imap extends MailBase
     /**
      * Returns the delimeter between mailboxes
      *
-     * @param
-     *            $imap_stream
      * @example INBOX/Test, or INBOX.Test
      * @return string $smimap_delimiter
      */
-    public function smimap_get_delimiter(&$imap_stream)
+    public function getMailboxDelimiter()
     {
         /* Do some caching here */
-        if ($this->smimap_capability($imap_stream, 'NAMESPACE')) {
+        if ($this->capability('NAMESPACE')) {
             /*
              * According to something that I can't find, this is supposed to work on all systems
              * OS: This won't work in Courier IMAP.
@@ -944,7 +895,7 @@ class Imap extends MailBase
              * OS: * NAMESPACE (PERSONAL NAMESPACES) (OTHER_USERS NAMESPACE) (SHARED NAMESPACES)
              * OS: We want to lookup all personal NAMESPACES...
              */
-            $read = $this->smimap_run_command($imap_stream, 'NAMESPACE', true, $a, $b);
+            $read = $this->smimap_run_command('NAMESPACE', true, $a, $b);
             if (preg_match('/\* NAMESPACE +(\( *\(.+\) *\)|NIL) +(\( *\(.+\) *\)|NIL) +(\( *\(.+\) *\)|NIL)/i', $read[0], $data)) {
                 if (preg_match('/^\( *\((.*)\) *\)/', $data[1], $data2)) {
                     $pn = $data2[1];
@@ -959,47 +910,42 @@ class Imap extends MailBase
                     }
                 }
             }
-            $smimap_delimiter = $pn[0];
+            $delimiter = $pn[0];
         } else {
-            fputs($imap_stream, ". LIST \"INBOX\" \"\"\r\n");
-            $read = $this->smimap_read_data($imap_stream, '.', true, $a, $b);
+            fputs($this->imapStream, ". LIST \"INBOX\" \"\"\r\n");
+            $read = $this->smimap_read_data('.', true, $a, $b);
             $quote_position = strpos($read[0], '"');
-            $smimap_delimiter = substr($read[0], $quote_position + 1, 1);
+            $delimiter = substr($read[0], $quote_position + 1, 1);
         }
-        return $smimap_delimiter;
+        return $delimiter;
     }
 
     /**
      * Gets the number of messages in the current mailbox.
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $mailbox
+     * @param string $mailbox            
      * @return int number Message
      */
-    public function smimap_get_num_messages(&$imap_stream, $mailbox)
+    public function getEmailCount($mailbox)
     {
-        $read_ary = $this->smimap_run_command($imap_stream, "EXAMINE \"$mailbox\"", false, $result, $message);
+        $read_ary = $this->smimap_run_command("EXAMINE \"$mailbox\"", false, $result, $message);
         for ($i = 0; $i < count($read_ary); $i ++) {
             if (preg_match('/[^ ]+ +([^ ]+) +EXISTS/', $read_ary[$i], $regs)) {
                 return $regs[1];
             }
         }
-        return false; // "BUG! Couldn't get number of messages in $mailbox!";
+        throw new \Exception("Couldn't get number of messages in $mailbox!");
+        // return false; // "BUG! Couldn't get number of messages in $mailbox!";
     }
 
     /**
      * Returns the number of unseen messages in this folder.
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $mailbox
+     * @param string $mailbox            
      */
-    public function smimap_get_num_unseen_messages(&$imap_stream, $mailbox)
+    public function getUnSeenEmailCount($mailbox)
     {
-        $read_ary = $this->smimap_run_command($imap_stream, "STATUS \"$mailbox\" (UNSEEN)", false, $result, $message);
+        $read_ary = $this->smimap_run_command("STATUS \"$mailbox\" (UNSEEN)", false, $result, $message);
         $i = 0;
         $regs = array(
             false,
@@ -1017,13 +963,12 @@ class Imap extends MailBase
     /**
      * Returns the number of unseen/total/recent messages in this folder
      *
-     * @param mixed $imap_stream            
      * @param string $mailbox            
      * @return ArrayObject MESSAGES UNSEEN RECENT
      */
-    public function smimap_status_messages($imap_stream, $mailbox)
+    public function statusEmail($mailbox)
     {
-        $read_ary = $this->smimap_run_command($imap_stream, "STATUS \"$mailbox\" (MESSAGES UNSEEN RECENT)", false, $result, $message);
+        $read_ary = $this->smimap_run_command("STATUS \"$mailbox\" (MESSAGES UNSEEN RECENT)", false, $result, $message);
         $i = 0;
         $messages = $unseen = $recent = false;
         $regs = array(
@@ -1052,12 +997,9 @@ class Imap extends MailBase
     /**
      * 邮件检索
      *
-     * @param
-     *            $imap_stream
-     * @param
-     *            $search_what
+     * @param string $search_what            
      */
-    function smimap_search(&$imap_stream, $search_what)
+    function searchEmail($search_what)
     {
         $allow_charset_search = TRUE;
         $uid_support = TRUE;
@@ -1085,23 +1027,24 @@ class Imap extends MailBase
             $ss = "SEARCH ALL $search_string";
         }
         /* read data back from IMAP */
-        $readin = $this->smimap_run_command($imap_stream, $ss, false, $result, $message, $uid_support);
+        $readin = $this->smimap_run_command($ss, false, $result, $message, $uid_support);
         /* try US-ASCII charset if search fails */
         if (strtolower($result) == 'no') {
             $ss = "SEARCH CHARSET \"US-ASCII\" ALL $search_string";
             if (empty($search_lit)) {
-                $readin = $this->smimap_run_command($imap_stream, $ss, false, $result, $message, $uid_support);
+                $readin = $this->smimap_run_command($ss, false, $result, $message, $uid_support);
                 if (strtolower($result) == 'no') {
                     $ss = "SEARCH CHARSET \"GB18030\" ALL $search_string";
-                    $readin = $this->smimap_run_command($imap_stream, $ss, false, $result, $message, $uid_support);
+                    $readin = $this->smimap_run_command($ss, false, $result, $message, $uid_support);
                     echo $message;
                 }
             } else {
                 $search_lit['command'] = $ss;
-                $readin = $this->smimap_run_literal_command($imap_stream, $search_lit, false, $result, $message, $uid_support);
+                $readin = $this->smimap_run_literal_command($search_lit, false, $result, $message, $uid_support);
             }
         }
         /* Keep going till we find the SEARCH response */
+        $messagelist = [];
         foreach ($readin as $readin_part) {
             /* Check to see if a SEARCH response was received */
             if (substr($readin_part, 0, 9) == '* SEARCH ') {
@@ -1129,22 +1072,27 @@ class Imap extends MailBase
     /**
      * Saves a message to a given folder -- used for saving sent messages
      *
-     * @param mixed $imap_stream            
      * @param string $sent_folder            
      * @param int $length            
      */
-    public function smimap_append($imap_stream, $sent_folder, $length)
+    public function appendEmail($sent_folder, $length)
     {
-        fputs($imap_stream, $this->smimap_session_id() . " APPEND \"$sent_folder\" (\\Seen) {" . $length . "}\r\n");
-        $tmp = fgets($imap_stream, 1024);
-        $this->smimap_append_checkresponse($tmp, $sent_folder);
+        // fputs($this->imapStream, $this->smimap_session_id() . " APPEND \"$sent_folder\" (\\Seen) {" . $length . "}\r\n");
+        // $tmp = fgets($this->imapStream, 1024);
+        $this->smimap_run_command("APPEND \"$sent_folder\" (\\Seen) {" . $length . "}\r\n", true, $tmp, $msg);
+        $this->append_checkresponse($tmp, $sent_folder);
     }
 
-    public function smimap_append_done($imap_stream, $folder = '')
+    /**
+     *
+     * @param string $folder            
+     */
+    public function appendEmailDone($folder = '')
     {
-        fputs($imap_stream, "\r\n");
-        $tmp = fgets($imap_stream, 1024);
-        $this->smimap_append_checkresponse($tmp, $folder);
+        // fputs($this->imapStream, "\r\n");
+        // $tmp = fgets($this->imapStream, 1024);
+        $this->smimap_run_command("\r\n", true, $tmp, $msg);
+        $this->append_checkresponse($tmp, $folder);
     }
 
     /**
@@ -1155,18 +1103,19 @@ class Imap extends MailBase
      * @param
      *            $folder
      */
-    private function smimap_append_checkresponse($response, $folder)
+    private function append_checkresponse($response, $folder)
     {
         if (preg_match("/(.*)(BAD|NO)(.*)$/", $response, $regs)) {
             $reason = $regs[3];
             if ($regs[2] == 'NO') {
-                $string = "<b>" . "ERROR: Could not append message to" . " $folder." . "</b><br />" . "Server responded:" . ' ' . $reason . "<br />";
+                $string = "ERROR: Could not append message to" . " $folder." . "Server responded:" . ' ' . $reason;
                 if (preg_match("/(.*)(quota)(.*)$/i", $reason, $regs)) {
-                    $string .= "Solution:" . ' ' . "Remove unneccessary messages from your folders. Start with your Trash folder." . "<br />";
+                    $string .= "Solution:" . ' ' . "Remove unneccessary messages from your folders. Start with your Trash folder.";
                 }
             } else {
-                $string = "<b>" . "ERROR: Bad or malformed request." . "</b><br />" . "Server responded:" . ' ' . $reason;
+                $string = "ERROR: Bad or malformed request." . "Server responded:" . ' ' . $reason;
             }
+            throw new \Exception($string);
         }
     }
 
@@ -1174,20 +1123,17 @@ class Imap extends MailBase
      * get the detail of the email
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $id
      * @param
      *            $mailbox
      */
-    public function smimap_get_message($imap_stream, $id, $mailbox)
+    public function getEmailById($id, $mailbox)
     {
         $uid_support = true;
         // type cast to int to prohibit 1:* msgs sets
         $id = (int) $id;
         $flags = array();
-        $read = $this->smimap_run_command($imap_stream, "FETCH $id (FLAGS BODYSTRUCTURE)", true, $response, $message, $uid_support);
-        // $read = sqimap_run_command($imap_stream, "FETCH $id RFC822.TEXT", true, $response, $message, $uid_support);
+        $read = $this->smimap_run_command("FETCH $id (FLAGS BODYSTRUCTURE)", true, $response, $message, $uid_support);
         if ($read) {
             if (preg_match('/.+FLAGS\s\((.*)\)\s/AUi', $read[0], $regs)) {
                 if (trim($regs[1])) {
@@ -1195,15 +1141,15 @@ class Imap extends MailBase
                 }
             }
         } else {
-            $this->error = "The server couldn't find the message you requested." . "Most probably your message list was out of date and the message has been moved away or deleted (perhaps by another program accessing the same mailbox).";
+            throw new \Exception("The server couldn't find the message you requested." . "Most probably your message list was out of date and the message has been moved away or deleted (perhaps by another program accessing the same mailbox).");
         }
         $bodystructure = implode('', $read);
         $msg = ComMime::mime_structure($bodystructure, $flags);
-        $read = $this->smimap_run_command($imap_stream, "FETCH $id BODY[HEADER]", true, $response, $message, $uid_support);
+        $read = $this->smimap_run_command("FETCH $id BODY[HEADER]", true, $response, $message, $uid_support);
         $rfc822_header = new Rfc822Header();
         $rfc822_header->parseHeader($read);
         $msg->rfc822_header = $rfc822_header;
-        $this->parse_message_entities($msg, $id, $imap_stream);
+        $this->parse_message_entities($msg, $id);
         $email = array();
         $header = $msg->rfc822_header;
         $env = array();
@@ -1227,18 +1173,17 @@ class Imap extends MailBase
         $env['To'] = $this->formatRecipientString($header->to);
         $env['Cc'] = $this->formatRecipientString($header->cc);
         $env['Bcc'] = $this->formatRecipientString($header->bcc);
-        $env['Priority'] = htmlspecialchars(Com_f::getPriorityStr($header->priority));
+        $env['Priority'] = htmlspecialchars(ComFunc::getPriorityStr($header->priority));
         $env['Mailer'] = ComMime::decodeHeader($header->xmailer);
         $email['header'] = $env;
         $ent_ar = $msg->findDisplayEntity(array());
         $cnt = count($ent_ar);
         for ($i = 0; $i < $cnt; $i ++) {
-            $messagebody .= ComMime::formatBody($imap_stream, $msg, $color, $wrap_at, $ent_ar[$i], $id, $mailbox);
+            $messagebody .= $this->formatBody($msg, $color, $wrap_at, $ent_ar[$i], $id, $mailbox);
             if ($i != $cnt - 1) {
                 $messagebody .= '<hr noshade size=1>';
             }
         }
-        // echo $messagebody;
         $email['body'] = $messagebody;
         if ($msg->type1 == 'mixed') {
             $attach = ComMime::formatAttachments($msg, $ent_ar, $mailbox, $id);
@@ -1252,21 +1197,20 @@ class Imap extends MailBase
      *
      * @param mixed $msg            
      * @param string $id            
-     * @param resource $imap_stream            
      */
-    private function parse_message_entities(&$msg, $id, $imap_stream)
+    private function parse_message_entities(&$msg, $id)
     {
         $uid_support = true;
         if (! empty($msg->entities))
             foreach ($msg->entities as $i => $entity) {
                 if (is_object($entity) && strtolower(get_class($entity)) == 'message') {
                     if (! empty($entity->rfc822_header)) {
-                        $read = $this->smimap_run_command($imap_stream, "FETCH $id BODY[" . $entity->entity_id . ".HEADER]", true, $response, $message, $uid_support);
+                        $read = $this->smimap_run_command("FETCH $id BODY[" . $entity->entity_id . ".HEADER]", true, $response, $message, $uid_support);
                         $rfc822_header = new Rfc822Header();
                         $rfc822_header->parseHeader($read);
                         $msg->entities[$i]->rfc822_header = $rfc822_header;
                     }
-                    $this->parse_message_entities($msg->entities[$i], $id, $imap_stream);
+                    $this->parse_message_entities($msg->entities[$i], $id);
                 }
             }
     }
@@ -1274,7 +1218,7 @@ class Imap extends MailBase
     /**
      * 格式化cc bcc to
      *
-     * @param unknown_type $recipients            
+     * @param array $recipients            
      */
     private function formatRecipientString($recipients)
     {
@@ -1294,8 +1238,6 @@ class Imap extends MailBase
      * NOTE: Verions of this function BEFORE SquirrelMail 1.4.18
      * actually *moved* messages instead of copying them
      *
-     * @param int $imap_stream
-     *            The resource ID for the IMAP socket
      * @param mixed $id
      *            A string or array of messages to copy
      * @param string $mailbox
@@ -1304,22 +1246,19 @@ class Imap extends MailBase
      * @return bool Returns true on successful copy, false on failure
      *        
      */
-    public function smimap_msg_copy(&$imap_stream, $id, $mailbox)
+    public function copyEmailById($id, $mailbox)
     {
-        $uid_support = true;
         $msgs_id = $this->smimap_message_list_squisher($id);
-        if (Com_dection::is_cn_code($mailbox)) {
-            $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
         }
-        $read = $this->smimap_run_command($imap_stream, "COPY $msgs_id \"$mailbox\"", true, $response, $message, $uid_support);
+        $read = $this->smimap_run_command("COPY $msgs_id \"$mailbox\"", true, $response, $message, true);
         return $response;
     }
 
     /**
      * Moves a set of messages ($id) to another folder
      *
-     * @param int $imap_stream
-     *            The resource ID for the IMAP socket
      * @param mixed $id
      *            A string or array of messages to copy
      * @param string $mailbox
@@ -1332,34 +1271,26 @@ class Imap extends MailBase
      * @since 1.4.18
      *       
      */
-    public function smimap_msg_move(&$imap_stream, $id, $mailbox)
+    public function moveEmailById($id, $mailbox)
     {
-        if (! empty($mailbox)) {
-            if (Com_dection::is_cn_code($mailbox)) {
-                $mailbox = Com_f::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        if (ComDection::is_cn_code($mailbox)) {
+            $mailbox = ComFunc::sm_mb_convert_encoding($mailbox, 'UTF7-IMAP', 'UTF-8');
+        }
+        if ($this->isMailboxExists($mailbox)) {
+            $response = $this->copyEmailById($id, $mailbox);
+            if ($response == 'OK') {
+                $response = $this->flagEmailById($id, '\\Deleted', true, true);
+                $this->mailboxExpunge($mailbox, $id);
+                return $response;
+            } else {
+                throw new \Exception($response);
             }
-            if ($this->smimap_mailbox_exists($imap_stream, $mailbox)) {
-                $response = $this->smimap_msg_copy($imap_stream, $id, $mailbox);
-                if ($response == 'OK') {
-                    $response = $this->smimap_toggle_flag($imap_stream, $id, '\\Deleted', true, true);
-                    $this->smimap_mailbox_expunge($imap_stream, $mailbox, $id);
-                    return $response;
-                } else {
-                    return $response;
-                }
-            }
-            // }else{
-            // $response=$this->smimap_toggle_flag($imap_stream, $id, '\\Deleted', true, true);
-            // $this->smimap_mailbox_expunge($imap_stream, $mailbox,$id);
-            // return $response;
         }
     }
 
     /**
      * add or remove the flag of the mail
      *
-     * @param int $imap_stream
-     *            The resource ID for the IMAP socket
      * @param mixed $id
      *            A string or array of messages to add or remove flags
      * @param string $flag
@@ -1367,31 +1298,31 @@ class Imap extends MailBase
      * @param boolean $set
      *            true or false
      * @param string $handle_errors
+     *            smimap_toggle_flag
      *            error message
      */
-    public function smimap_toggle_flag(&$imap_stream, $id, $flag, $set = false, $handle_errors = true)
+    public function flagEmailById($id, $flag, $set = false, $handle_errors = true)
     {
         $uid_support = TRUE;
         $msgs_id = $this->smimap_message_list_squisher($id);
         $set_string = $set ? '+' : '-';
-        $read = $this->smimap_run_command($imap_stream, "STORE $msgs_id " . $set_string . "FLAGS ($flag)", $handle_errors, $response, $message, $uid_support);
+        $read = $this->smimap_run_command("STORE $msgs_id " . $set_string . "FLAGS ($flag)", $handle_errors, $response, $message, $uid_support);
         return $response;
     }
 
     /**
      * 获取邮件的头信息
      *
-     * @param unknown_type $imapConnection            
      * @param unknown_type $start_msg            
      * @param unknown_type $show_num            
      * @param unknown_type $mbxresponse            
      */
-    public function smimap_get_message_headers($imapConnection, $mbxresponse, $start_msg = 1, $show_num = 6)
+    public function getEmailHeaders($mbxresponse, $start_msg = 1, $show_num = 6)
     {
         $msgs = array();
         if ($mbxresponse['EXISTS'] >= 1) {
             $num_msgs = $mbxresponse['EXISTS'];
-            $id = $this->smimap_get_mail_id($imapConnection, $mbxresponse); // 需要将ID缓存
+            $id = $this->getMailIdsByMailbox($mbxresponse); // 需要将ID缓存
             /* if it's not sorted */
             if ($start_msg + ($show_num - 1) < $num_msgs) {
                 $end_msg = $start_msg + ($show_num - 1);
@@ -1414,7 +1345,7 @@ class Imap extends MailBase
                 } else {
                     $end_loop = $show_num;
                 }
-            $msgs = $this->smimap_get_mail_header_list($imapConnection, $id, $end_loop);
+            $msgs = $this->smimap_get_mail_header_list($id, $end_loop);
         }
         return $msgs;
     }
@@ -1422,11 +1353,11 @@ class Imap extends MailBase
     /**
      * 获取头信息
      *
-     * @param source $imap_stream            
      * @param array $msg_list            
-     * @param int $show_num            
+     * @param int $show_num
+     *            smimap_get_mail_header_list
      */
-    private function smimap_get_mail_header_list($imap_stream, $id, $show_num = false)
+    private function smimap_get_mail_header_list($id, $show_num = false)
     {
         $allow_server_sort = true;
         $uid_support = true;
@@ -1448,7 +1379,7 @@ class Imap extends MailBase
         } else {
             $query = "FETCH $msgs_str (FLAGS UID RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Date To Cc From Subject X-Priority Importance Priority Content-Type)])";
         }
-        $read_list = $this->smimap_run_command_list($imap_stream, $query, true, $response, $message, $uid_support);
+        $read_list = $this->smimap_run_command_list($query, true, $response, $message, $uid_support);
         $i = 0;
         foreach ($read_list as $r) {
             /* initialize/reset vars */
@@ -1469,8 +1400,8 @@ class Imap extends MailBase
             $id = substr($read, 2, $i_space - 2);
             $fetch = substr($read, $i_space + 1, 5);
             if (! is_numeric($id) && $fetch !== 'FETCH') {
-                $string = '<br /><b>' . "ERROR: Could not complete request." . '</b><br />' . "Unknown response from IMAP server:" . ' 1.' . htmlspecialchars($read) . "<br />";
-                break;
+                $string = "ERROR: Could not complete request." . "Unknown response from IMAP server:" . ' 1.' . $read;
+                throw new \Exception($string);
             }
             $i = strpos($read, '(', $i_space + 5);
             $read = substr($read, $i + 1);
@@ -1497,7 +1428,7 @@ class Imap extends MailBase
                         }
                         break;
                     case 'FLAGS':
-                        $flags = Com_f::parseArray($read, $i);
+                        $flags = ComFunc::parseArray($read, $i);
                         if (! $flags)
                             break 3;
                         foreach ($flags as $flag) {
@@ -1533,12 +1464,12 @@ class Imap extends MailBase
                         }
                         break;
                     case 'INTERNALDATE':
-                        $internal_date = Com_f::parseString($read, $i);
+                        $internal_date = ComFunc::parseString($read, $i);
                         break;
                     case 'BODY.PEEK[HEADER.FIELDS':
                     case 'BODY[HEADER.FIELDS':
                         $i = strpos($read, '{', $i);
-                        $header = Com_f::parseString($read, $i);
+                        $header = ComFunc::parseString($read, $i);
                         if ($header === false)
                             break 2;
                             /* First we replace all \r\n by \n, and unfold the header */
@@ -1636,12 +1567,12 @@ class Imap extends MailBase
                 $msgi = "$id";
                 $messages[$msgi]['ID'] = $id;
             }
-            $messages[$msgi]['RECEIVED_TIME_STAMP'] = Com_date::getTimeStamp($tmpinternal_date);
-            $messages[$msgi]['TIME_STAMP'] = Com_date::getTimeStamp($tmpdate);
+            $messages[$msgi]['RECEIVED_TIME_STAMP'] = ComDate::getTimeStamp($tmpinternal_date);
+            $messages[$msgi]['TIME_STAMP'] = ComDate::getTimeStamp($tmpdate);
             date_default_timezone_set('PRC');
-            $read_time = date("Y年m月d日H:i", Com_date::getTimeStamp($tmpdate));
+            $read_time = date("Y年m月d日H:i", ComDate::getTimeStamp($tmpdate));
             $messages[$msgi]['READABLE_TIME'] = $read_time;
-            $from = Com_f::parseAddress($from);
+            $from = ComFunc::parseAddress($from);
             if ($from[0][1]) {
                 $from = ComMime::decodeHeader($from[0][1], true, false);
             } else {
@@ -1650,7 +1581,7 @@ class Imap extends MailBase
             $messages[$msgi]['FROM'] = $from;
             $subject = ComMime::decodeHeader($subject, true, false);
             $messages[$msgi]['SUBJECT'] = $subject;
-            $to = Com_f::parseAddress($to);
+            $to = ComFunc::parseAddress($to);
             if ($to[0][1]) {
                 $to = ComMime::decodeHeader($to[0][1], true, false);
             } else {
@@ -1658,7 +1589,7 @@ class Imap extends MailBase
             }
             $messages[$msgi]['TO'] = $to;
             $messages[$msgi]['PRIORITY'] = $priority;
-            $cc = Com_f::parseAddress($cc);
+            $cc = ComFunc::parseAddress($cc);
             if ($cc[0][1]) {
                 $cc = ComMime::decodeHeader($cc[0][1], true, false);
             } else {
@@ -1693,7 +1624,7 @@ class Imap extends MailBase
     /**
      * 获取邮件的优先级
      *
-     * @param unknown_type $sValue            
+     * @param string $sValue            
      */
     private function parsePriority($sValue)
     {
@@ -1714,34 +1645,32 @@ class Imap extends MailBase
      * Delete one or more message(s) and move it/them to trash or expunge the folder
      *
      * @param
-     *            $imap_stream
-     * @param
      *            $from_folder
      * @param
      *            $id
      * @param
      *            $direct_del
      */
-    public function smimap_msg_delete(&$imap_stream, $from_folder, $id, $direct_del = false)
+    public function deleteEmailById($id, $from_folder, $direct_del = false)
     {
         $uid_support = true;
         if (! $direct_del) {
-            $trash_folder = $this->fetch_inner_mailbox($imap_stream, 'trash');
+            $trash_folder = $this->fetch_inner_mailbox('trash');
             if ($from_folder == $trash_folder || empty($trash_folder)) {
-                return false;
+                throw new \Exception('illegal exception');
             }
-            if (($this->smimap_mailbox_exists($imap_stream, $trash_folder))) {
+            if (($this->isMailboxExists($trash_folder))) {
                 $msgs_id = $this->smimap_message_list_squisher($id);
                 /**
                  * turn off internal error handling (third argument = false) and
                  * ignore copy to trash errors (allows to delete messages when overquota)
                  */
-                $read = $this->smimap_run_command($imap_stream, "COPY $msgs_id \"$trash_folder\"", false, $response, $message, $uid_support);
-                $read = $this->smimap_run_command($imap_stream, "STORE $msgs_id +FLAGS (\\Deleted)", true, $response, $message, $uid_support);
+                $read = $this->smimap_run_command("COPY $msgs_id \"$trash_folder\"", false, $response, $message, $uid_support);
+                $read = $this->smimap_run_command("STORE $msgs_id +FLAGS (\\Deleted)", true, $response, $message, $uid_support);
             }
         } else {
             $msgs_id = $this->smimap_message_list_squisher($id);
-            $read = $this->smimap_run_command($imap_stream, "STORE $msgs_id +FLAGS (\\Deleted)", true, $response, $message, $uid_support);
+            $read = $this->smimap_run_command("STORE $msgs_id +FLAGS (\\Deleted)", true, $response, $message, $uid_support);
         }
         return $response;
     }
@@ -1752,9 +1681,9 @@ class Imap extends MailBase
      * @param $type sent
      *            trash
      */
-    private function fetch_inner_mailbox(&$imap_stream, $type = 'trash')
+    private function fetch_inner_mailbox($type = 'trash')
     {
-        $boxes = $this->smimap_mailbox_list($imap_stream);
+        $boxes = $this->smimap_mailbox_list();
         switch (strtolower($type)) {
             case 'trash':
                 $box_name1 = '已删除';
@@ -1778,15 +1707,14 @@ class Imap extends MailBase
     /**
      * Returns the references header lines
      *
-     * @param resource $imap_stream            
      * @param string $id            
-     * @return ArrayObject $responses
+     * @return array $responses
      */
-    public function smimap_get_reference_header($imap_stream, $id)
+    public function getReferenceHeadersById($id)
     {
         $uid_support = true;
         $responses = array();
-        $responses = $this->smimap_run_command($imap_stream, "FETCH $id BODY[HEADER.FIELDS (References)]", true, $response, $message, $uid_support);
+        $responses = $this->smimap_run_command("FETCH $id BODY[HEADER.FIELDS (References)]", true, $response, $message, $uid_support);
         if (! preg_match("/^\* ([0-9]+) FETCH/i", $responses[0][0], $regs)) {
             $responses = array();
         }
@@ -1796,18 +1724,15 @@ class Imap extends MailBase
     /**
      * Get sort order from server and return it as the $id array for mailbox_display
      *
-     * @param
-     *            $imap_stream
+     * @param string $mailbox            
      * @param $sort 排序类型
-     *            DATE FROM SUBJECT SIZE
-     * @param
-     *            $mbxresponse
-     * @param $mailbox 当前邮件夹            
+     *            DATE FROM SUBJECT SIZE ARRIVAL
      * @return array $server_sort_array
      */
-    public function smimap_server_sort(&$imap_stream, $mbxresponse, $sort = 0)
+    public function serverSort($mailbox, $sort = '')
     {
-        $uid_support = true;
+        $mbxresponse = $this->mailboxSelect($mailbox);
+        $uid_support = $mbxresponse['UIDVALIDITY'];
         $server_sort_array = array();
         $sort_test = array();
         // gmail does not support sorting I guess, so it always should have default sort
@@ -1819,7 +1744,7 @@ class Imap extends MailBase
                     $uidnext = '*';
                 }
                 $query = "SEARCH UID 1:$uidnext";
-                $uids = $this->smimap_run_command_list($imap_stream, $query, true, $response, $message, true);
+                $uids = $this->smimap_run_command_list($query, true, $response, $message, true);
                 if (isset($uids[0])) {
                     for ($i = 0, $iCnt = count($uids); $i < $iCnt; ++ $i) {
                         for ($j = 0, $jCnt = count($uids[$i]); $j < $jCnt; ++ $j) {
@@ -1830,7 +1755,7 @@ class Imap extends MailBase
                     }
                 }
                 if (! preg_match("/OK/", $response)) {
-                    $server_sort_array = 'no';
+                    throw new \Exception($response);
                 }
             } else {
                 $qty = $mbxresponse['EXISTS'];
@@ -1848,7 +1773,7 @@ class Imap extends MailBase
         );
         if (! empty($sort_on[$sort])) {
             $query = "SORT ($sort_on[$sort]) " . 'UTF-8' . ' ALL';
-            $sort_test = $this->smimap_run_command($imap_stream, $query, true, $response, $message, $uid_support);
+            $sort_test = $this->smimap_run_command($query, true, $response, $message, $uid_support);
         }
         if (isset($sort_test[0])) {
             for ($i = 0, $iCnt = count($sort_test); $i < $iCnt; ++ $i) {
@@ -1861,7 +1786,7 @@ class Imap extends MailBase
         }
         $server_sort_array = array_reverse($server_sort_array);
         if (! preg_match("/OK/", $response)) {
-            $server_sort_array = 'no';
+            throw new \Exception($response);
         }
         return $server_sort_array;
     }
@@ -1869,18 +1794,18 @@ class Imap extends MailBase
     /**
      * Get sort order from local and return it as the $id array for mailbox_display
      *
-     * @param resource $imap_stream            
      * @param array $mbxresponse
      *            smimap_get_php_sort_order
      */
-    private function smimap_get_mail_id($imap_stream, $mbxresponse)
+    public function getMailIdsByMailbox($mailbox)
     {
-        $uid_support = true;
+        $mbxresponse = $this->mailboxSelect($mailbox);
+        $uid_support = $mbxresponse['UIDVALIDITY'];
         $id_arr = array();
         if ($uid_support) {
             $uidnext = isset($mbxresponse['UIDNEXT']) ? $mbxresponse['UIDNEXT'] - 1 : '*';
             $query = "SEARCH UID 1:$uidnext";
-            $uids = $this->smimap_run_command($imap_stream, $query, true, $response, $message, true);
+            $uids = $this->smimap_run_command($query, true, $response, $message, true);
             if (isset($uids[0])) {
                 // EIMS workaround. EIMS returns the result as multiple untagged SEARCH responses
                 foreach ($uids as $line) {
@@ -1890,12 +1815,117 @@ class Imap extends MailBase
                 }
             }
             if (! preg_match("/OK/", $response)) {
-                $id_arr = 'no';
+                throw new \Exception($response);
             }
         } else {
             $qty = $mbxresponse['EXISTS'];
             $id_arr = range(1, $qty);
         }
         return $id_arr;
+    }
+
+    /**
+     * This returns a parsed string called $body.
+     * That string can then
+     * be displayed as the actual message in the HTML. It contains
+     * everything needed, including HTML Tags, Attachments at the
+     * bottom, etc.
+     */
+    public function formatBody($message, $color, $wrap_at, $ent_num, $id)
+    {
+        $body = '';
+        $body_message = $message->getEntity($ent_num);
+        if (($body_message->header->type0 == 'text') || ($body_message->header->type0 == 'rfc822')) {
+            $body = $this->mime_fetch_body($id, $ent_num);
+            $body = ComMime::decodeBody($body, $body_message->header->encoding);
+            /*
+             * If there are other types that shouldn't be formatted, add
+             * them here.
+             */
+            $show_html_default = 1;
+            if ($body_message->header->type1 == 'html') {
+                if ($show_html_default != 1) {
+                    $entity_conv = array(
+                        '&nbsp;' => ' ',
+                        '<p>' => "\n",
+                        '<P>' => "\n",
+                        '<br>' => "\n",
+                        '<BR>' => "\n",
+                        '<br />' => "\n",
+                        '<BR />' => "\n",
+                        '&gt;' => '>',
+                        '&lt;' => '<'
+                    );
+                    $body = strtr($body, $entity_conv);
+                    $body = strip_tags($body);
+                    $body = trim($body);
+                    ComMime::translateText($body, $wrap_at, $body_message->header->getParameter('charset'));
+                } else {
+                    $charset = $body_message->header->getParameter('charset');
+                    if (! empty($charset)) {
+                        $charset = strtolower($charset);
+                        if ($charset == 'gbk' || $charset == 'gb2312' || $charset == 'gb18030') {
+                            $body = iconv($charset, 'utf-8//IGNORE', $body);
+                        }
+                        $body = ComMime::magicHTML($body, $id, $message);
+                    }
+                }
+            } else {
+                $charset = $body_message->header->getParameter('charset');
+                ComMime::translateText($body, $wrap_at, $charset);
+            }
+        }
+        return $body;
+    }
+
+    /*
+     * This starts the parsing of a particular structure. It is called recursively,
+     * so it can be passed different structures. It returns an object of type
+     * $message.
+     * First, it checks to see if it is a multipart message. If it is, then it
+     * handles that as it sees is necessary. If it is just a regular entity,
+     * then it parses it and adds the necessary header information (by calling out
+     * to mime_get_elements()
+     */
+    public function mime_fetch_body($id, $ent_id = 1, $fetch_size = 0)
+    {
+        $uid_support = true;
+        /*
+         * Do a bit of error correction. If we couldn't find the entity id, just guess
+         * that it is the first one. That is usually the case anyway.
+         */
+        if (! $ent_id) {
+            $cmd = "FETCH $id BODY[]";
+        } else {
+            $cmd = "FETCH $id BODY[$ent_id]";
+        }
+        
+        if ($fetch_size != 0)
+            $cmd .= "<0.$fetch_size>";
+        $data = $this->smimap_run_command($cmd, true, $response, $message, $uid_support);
+        do {
+            $topline = trim(array_shift($data));
+        } while ($topline && $topline[0] == '*' && ! preg_match('/\* [0-9]+ FETCH.*/i', $topline));
+        
+        $wholemessage = implode('', $data);
+        if (preg_match('/\{([^\}]*)\}/', $topline, $regs)) {
+            $ret = substr($wholemessage, 0, $regs[1]);
+            /*
+             * There is some information in the content info header that could be important
+             * in order to parse html messages. Let's get them here.
+             */
+        } else 
+            if (preg_match('/"([^"]*)"/', $topline, $regs)) {
+                $ret = $regs[1];
+            } else 
+                if ((stristr($topline, 'nil') !== false) && (empty($wholemessage))) {
+                    $ret = $wholemessage;
+                } else {
+                    $data = $this->smimap_run_command("FETCH $passed_id BODY[]", true, $response, $message, $uid_support);
+                    array_shift($data);
+                    $wholemessage = implode('', $data);
+                    $ret = $wholemessage;
+                }
+        return $ret;
     }
 }
